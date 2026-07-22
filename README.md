@@ -10,6 +10,16 @@ colar.
 2. Cada chat novo é salvo no Supabase e processado: extrai nome do contato,
    telefone e a mensagem mais longa dele (heurística de "demanda").
 3. O dashboard (`/`) lista os tickets pendentes com um botão de copiar.
+4. A página **`/mensagens`** é o painel de atendimento guiado: identifica o
+   ramo do produto, busca o próximo consultor da fila (Supabase, mesmas
+   tabelas `sdr_vendedores`/`sdr_atendimentos` que a extensão Assistente SDR
+   usa), monta as mensagens padronizadas de cada fluxo (triagem, com
+   cadastro, sem cadastro, Direct/CNAE) e manda direto no WhatsApp do
+   cliente via Umbler.
+
+Ou seja: a extensão, o `/mensagens` e o dashboard de tickets todos
+compartilham o **mesmo projeto Supabase** — por isso não precisam de uma
+"conexão" entre si, só precisam apontar pras mesmas variáveis de ambiente.
 
 ## Pré-requisitos
 
@@ -32,11 +42,22 @@ colar.
 1. Suba este projeto num repositório no GitHub.
 2. Importe o repositório na Vercel ([vercel.com/new](https://vercel.com/new)).
 3. Em **Settings > Environment Variables**, adicione:
-   - `UMBLER_API_TOKEN`
+   - `UMBLER_API_TOKEN` — token da API do Umbler Talk
+   - `UMBLER_ORGANIZATION_ID` — pegue acessando `/api/umbler/organizacoes`
+     depois do primeiro deploy (só com o token já configurado)
+   - `UMBLER_FROM_PHONE` — número do canal Umbler de onde as mensagens saem
+     (o "de onde", não o do cliente)
    - `SUPABASE_URL`
    - `SUPABASE_SERVICE_ROLE_KEY`
+   - `NEXT_PUBLIC_SUPABASE_URL` — mesma URL do projeto Supabase, mas exposta
+     ao navegador (a página `/mensagens` roda algumas consultas direto do
+     cliente, igual a extensão)
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY` — a **anon key** (não a service role) do
+     mesmo projeto Supabase
    - `CRON_SECRET` (invente uma senha qualquer)
 4. Deploy.
+5. Acesse `/api/umbler/organizacoes` pra descobrir o `UMBLER_ORGANIZATION_ID`
+   e completar essa env var, depois faça um redeploy.
 
 ### 3. Cron — importante
 
