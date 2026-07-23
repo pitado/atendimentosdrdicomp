@@ -194,6 +194,7 @@ export default function Mensagens() {
   const [sugestaoIA, setSugestaoIA] = useState(null);
   const [mensagemEditavel, setMensagemEditavel] = useState('');
   const [cadastroStatus, setCadastroStatus] = useState('nao_sei'); // 'nao_sei' | 'sim' | 'nao'
+  const [resetTeste, setResetTeste] = useState(false);
   const [carregandoIA, setCarregandoIA] = useState(false);
   const [erroIA, setErroIA] = useState('');
   const [mostrarManual, setMostrarManual] = useState(false);
@@ -333,14 +334,24 @@ const c = consultorAtual();
     setTelCliente(chat.telefone || '');
     setSugestaoIA(null);
     setErroIA('');
+    setResetTeste(false);
 
     try {
       const r = await fetch('/api/umbler/chat-historico?id=' + encodeURIComponent(chat.id));
       const j = await r.json();
-      if (j.ok && j.transcricao) {
-        sugerirRespostaIA(j.transcricao);
+      if (j.ok) {
+        setResetTeste(!!j.resetado);
+        if (j.transcricao) {
+          sugerirRespostaIA(j.transcricao);
+        } else {
+          // Conversa vazia (ex.: reset de teste com "oitchencha"): trata como
+          // cliente novo — limpa a sugestão e espera a próxima mensagem.
+          setConversaUsadaIA('');
+          setMensagemEditavel('');
+          setRaciocinioIA('');
+        }
       } else if (chat.ultimaMensagem) {
-        // não conseguiu o histórico completo — segue com o que já tinha
+        // não conseguiu o histórico — segue com o que já tinha
         sugerirRespostaIA('Cliente: ' + chat.ultimaMensagem);
       }
     } catch {
@@ -454,6 +465,12 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
             )}
           </div>
         </div>
+
+        {resetTeste && (
+          <div className="reset-aviso">
+            ↺ Conversa reiniciada (teste) — tratando como <strong>cliente novo</strong>. Envie a próxima mensagem no WhatsApp e clique no chat de novo.
+          </div>
+        )}
 
         {conversaUsadaIA && (
           <div className="ia-controles">
@@ -729,6 +746,7 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
         .chat-nome { font-weight: 700; font-size: .85rem; color: #22293a; }
         .chat-msg { font-size: .78rem; color: #6b7385; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .ia-status { text-align: center; font-size: .85rem; color: #1c3f94; margin-bottom: 12px; }
+        .reset-aviso { background: #fff7e0; border: 1px solid #f0d98c; border-left: 4px solid #d99a06; color: #7a6216; border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; font-size: .82rem; }
         .ia-controles { background: #fff; border: 1px solid #c6d4f2; border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
         .ia-controles-linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .ia-controles-label { font-size: .78rem; font-weight: 700; color: #1c3f94; }

@@ -3,8 +3,15 @@
 // em texto, na ordem em que aconteceu — pra dar contexto de verdade pra IA, não
 // só a última mensagem do cliente. Tenta puxar TODAS as mensagens (paginando a
 // rota relative-messages); se isso falhar, cai pras últimas ~100 do próprio chat.
+//
+// GATILHO DE TESTE: se o cliente mandar a mensagem "oitchencha", o histórico é
+// cortado a partir dela — o atendimento passa a ser tratado do zero, como um
+// cliente novo. É um reset só de contexto: NÃO apaga nada na Umbler.
 
 import { getAllChatMessages, getChat } from '@/lib/umbler';
+
+// Palavra que o cliente manda no WhatsApp pra reiniciar o atendimento (teste).
+const GATILHO_RESET = 'oitchencha';
 
 export async function GET(req) {
   const { searchParams } = new URL(req.url);
@@ -31,7 +38,20 @@ export async function GET(req) {
       (a, b) => new Date(a.eventAtUTC) - new Date(b.eventAtUTC)
     );
 
-    const transcricao = ordenadas
+    // Reset de teste: procura a ÚLTIMA vez que o cliente mandou o gatilho e
+    // descarta tudo até ela (inclusive). O que sobra é a conversa "nova".
+    let base = ordenadas;
+    let resetado = false;
+    for (let i = ordenadas.length - 1; i >= 0; i--) {
+      const m = ordenadas[i];
+      if (m.source === 'Contact' && (m.content || '').trim().toLowerCase() === GATILHO_RESET) {
+        base = ordenadas.slice(i + 1);
+        resetado = true;
+        break;
+      }
+    }
+
+    const transcricao = base
       .filter((m) => m.content)
       .map((m) => {
         const quem = m.source === 'Contact' ? 'Cliente' : m.source === 'Bot' ? 'Bot' : 'Atendente';
@@ -39,7 +59,7 @@ export async function GET(req) {
       })
       .join('\n');
 
-    return Response.json({ ok: true, transcricao, totalMensagens: ordenadas.length });
+    return Response.json({ ok: true, transcricao, totalMensagens: base.length, resetado });
   } catch (err) {
     const detalhe = err instanceof Error ? err.message : String(err);
     return Response.json({ ok: false, erro: 'Falha ao buscar histórico do chat.', detalhe }, { status: 502 });
