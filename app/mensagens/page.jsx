@@ -794,7 +794,7 @@ const c = consultorAtual();
       {/* ===== Coluna lateral: lista de clientes ===== */}
       <aside className="sidebar">
         <div className="sidebar-top">
-          <img src="/logo/logo_wordmark.png" alt="Dicomp" className="sidebar-logo" />
+          <img src="/logo/sdr.svg" alt="SDR" className="sidebar-logo" />
           <button className="btn-refresh" onClick={buscarChatsAbertos} disabled={carregandoChats} type="button" title="Atualizar lista">
             {carregandoChats ? '…' : '↻'}
           </button>
