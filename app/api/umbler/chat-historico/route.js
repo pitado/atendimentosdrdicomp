@@ -16,22 +16,30 @@ const GATILHO_RESET = 'oitchencha';
 export async function GET(req) {
   const { searchParams } = new URL(req.url);
   const chatId = (searchParams.get('id') || '').trim();
+  // Modo leve (usado pelo auto-refresh de 15s): 1 requisição só, sem paginar —
+  // pra não forçar a API da Umbler. Traz as últimas ~100 mensagens.
+  const leve = searchParams.get('leve') === '1';
   if (!chatId) {
     return Response.json({ ok: false, erro: 'Informe o id do chat.' }, { status: 400 });
   }
 
   try {
     let mensagens = [];
-    try {
-      mensagens = await getAllChatMessages(chatId, { max: 300 });
-    } catch {
-      mensagens = [];
-    }
-    // Reserva: se a paginação não trouxe nada, usa as mensagens que já vêm
-    // embutidas no próprio chat (latestMessages).
-    if (mensagens.length === 0) {
+    if (leve) {
       const chat = await getChat(chatId, { includeMessages: 100 });
       mensagens = Array.isArray(chat.latestMessages) ? chat.latestMessages : [];
+    } else {
+      try {
+        mensagens = await getAllChatMessages(chatId, { max: 300 });
+      } catch {
+        mensagens = [];
+      }
+      // Reserva: se a paginação não trouxe nada, usa as mensagens que já vêm
+      // embutidas no próprio chat (latestMessages).
+      if (mensagens.length === 0) {
+        const chat = await getChat(chatId, { includeMessages: 100 });
+        mensagens = Array.isArray(chat.latestMessages) ? chat.latestMessages : [];
+      }
     }
 
     const ordenadas = [...mensagens].sort(
@@ -51,15 +59,18 @@ export async function GET(req) {
       }
     }
 
-    const transcricao = base
+    // Estruturado (pra renderizar em balões no painel) + string (pra IA).
+    const estruturadas = base
       .filter((m) => m.content)
-      .map((m) => {
-        const quem = m.source === 'Contact' ? 'Cliente' : m.source === 'Bot' ? 'Bot' : 'Atendente';
-        return `${quem}: ${m.content}`;
-      })
-      .join('\n');
+      .map((m) => ({
+        quem: m.source === 'Contact' ? 'Cliente' : m.source === 'Bot' ? 'Bot' : 'Atendente',
+        texto: m.content,
+        em: m.eventAtUTC || null,
+      }));
 
-    return Response.json({ ok: true, transcricao, totalMensagens: base.length, resetado });
+    const transcricao = estruturadas.map((m) => `${m.quem}: ${m.texto}`).join('\n');
+
+    return Response.json({ ok: true, transcricao, mensagens: estruturadas, totalMensagens: base.length, resetado });
   } catch (err) {
     const detalhe = err instanceof Error ? err.message : String(err);
     return Response.json({ ok: false, erro: 'Falha ao buscar histórico do chat.', detalhe }, { status: 502 });

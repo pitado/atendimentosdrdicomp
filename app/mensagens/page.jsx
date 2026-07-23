@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 // ====== Supabase (mesmo projeto/tabelas da extensão Assistente SDR) ======
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -188,6 +188,12 @@ function formatarCnpj(d) {
   return `${s.slice(0, 2)}.${s.slice(2, 5)}.${s.slice(5, 8)}/${s.slice(8, 12)}-${s.slice(12, 14)}`;
 }
 
+// Inicial pro avatar da lista/cabeçalho.
+function inicial(txt) {
+  const s = (txt || '').trim();
+  return s ? s[0].toUpperCase() : '?';
+}
+
 export default function Mensagens() {
   const [aba, setAba] = useState('triagem');
   const [nomeCliente, setNomeCliente] = useState('');
@@ -209,6 +215,8 @@ export default function Mensagens() {
   const [chatsAbertos, setChatsAbertos] = useState([]);
   const [carregandoChats, setCarregandoChats] = useState(false);
   const [chatSelecionadoId, setChatSelecionadoId] = useState(null);
+  const [conversaMensagens, setConversaMensagens] = useState([]); // balões (Cliente/Bot/Atendente)
+  const [mobilePane, setMobilePane] = useState('lista'); // 'lista' | 'conversa' (só afeta o mobile)
   const [conversaUsadaIA, setConversaUsadaIA] = useState('');
   const [raciocinioIA, setRaciocinioIA] = useState('');
   const [sugestaoIA, setSugestaoIA] = useState(null);
@@ -218,6 +226,7 @@ export default function Mensagens() {
   const [carregandoIA, setCarregandoIA] = useState(false);
   const [erroIA, setErroIA] = useState('');
   const [mostrarManual, setMostrarManual] = useState(false);
+  const corpoRef = useRef(null); // pra rolar a conversa pro fim
 
   function consultorAtual() {
     const digitado = consNome.trim();
@@ -285,7 +294,12 @@ export default function Mensagens() {
       });
       const j = await r.json();
       setStatusEnvio((s) => ({ ...s, [chave]: j.ok ? 'ok' : 'erro' }));
-      if (!j.ok) setErro('O envio falhou: ' + [j.erro, j.detalhe].filter(Boolean).join(' — '));
+      if (j.ok) {
+        // Mostra na conversa que a mensagem saiu (o refresh confirma depois).
+        setConversaMensagens((ms) => [...ms, { quem: 'Atendente', texto }]);
+      } else {
+        setErro('O envio falhou: ' + [j.erro, j.detalhe].filter(Boolean).join(' — '));
+      }
     } catch {
       setStatusEnvio((s) => ({ ...s, [chave]: 'erro' }));
       setErro('O envio falhou (rede ou servidor).');
@@ -371,6 +385,7 @@ const c = consultorAtual();
 
   async function selecionarChatAberto(chat) {
     setChatSelecionadoId(chat.id);
+    setMobilePane('conversa');
     setNomeCliente(chat.nome || '');
     setTelCliente(chat.telefone || '');
     setSugestaoIA(null);
@@ -378,12 +393,15 @@ const c = consultorAtual();
     setResetTeste(false);
     setCnpjInfo(null);
     setCnpjAuto(false);
+    setConversaMensagens([]);
+    setMensagemEditavel('');
 
     try {
       const r = await fetch('/api/umbler/chat-historico?id=' + encodeURIComponent(chat.id));
       const j = await r.json();
       if (j.ok) {
         setResetTeste(!!j.resetado);
+        setConversaMensagens(Array.isArray(j.mensagens) ? j.mensagens : []);
         if (j.transcricao) {
           // Detecta + verifica o CNPJ da conversa antes de pedir a sugestão,
           // e passa o resultado direto pra IA (o estado ainda não atualizou aqui).
@@ -393,15 +411,18 @@ const c = consultorAtual();
           // Conversa vazia (ex.: reset de teste com "oitchencha"): trata como
           // cliente novo — limpa a sugestão e espera a próxima mensagem.
           setConversaUsadaIA('');
-          setMensagemEditavel('');
           setRaciocinioIA('');
         }
       } else if (chat.ultimaMensagem) {
         // não conseguiu o histórico — segue com o que já tinha
+        setConversaMensagens([{ quem: 'Cliente', texto: chat.ultimaMensagem }]);
         sugerirRespostaIA('Cliente: ' + chat.ultimaMensagem);
       }
     } catch {
-      if (chat.ultimaMensagem) sugerirRespostaIA('Cliente: ' + chat.ultimaMensagem);
+      if (chat.ultimaMensagem) {
+        setConversaMensagens([{ quem: 'Cliente', texto: chat.ultimaMensagem }]);
+        sugerirRespostaIA('Cliente: ' + chat.ultimaMensagem);
+      }
     }
   }
 
@@ -476,125 +497,175 @@ const c = consultorAtual();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Auto-refresh das mensagens do chat aberto a cada 15s. Usa o modo "leve"
+  // (1 requisição só, sem paginar) e NÃO re-dispara a IA — pra não forçar as
+  // APIs. Pausa quando a aba está oculta e nunca sobrepõe requisições.
+  useEffect(() => {
+    if (!chatSelecionadoId) return;
+    let cancelado = false;
+    let emVoo = false;
+    async function tick() {
+      if (emVoo || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
+      emVoo = true;
+      try {
+        const r = await fetch('/api/umbler/chat-historico?leve=1&id=' + encodeURIComponent(chatSelecionadoId));
+        const j = await r.json();
+        if (!cancelado && j.ok && Array.isArray(j.mensagens)) {
+          setConversaMensagens(j.mensagens);
+          setResetTeste(!!j.resetado);
+        }
+      } catch {
+        // silencioso — é atualização de fundo
+      }
+      emVoo = false;
+    }
+    const id = setInterval(tick, 15000);
+    return () => { cancelado = true; clearInterval(id); };
+  }, [chatSelecionadoId]);
+
+  // Rola a conversa pro fim quando chegam mensagens novas.
+  useEffect(() => {
+    const el = corpoRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [conversaMensagens]);
+
   const c = consultorAtual();
   const lista = FLUXOS[aba] || [];
 
   return (
-    <div className="pagina">
-      <header>
-        <img src="/logo/logo_wordmark.png" alt="SDR" className="logo" />
-        <p>Atendimento — CS Dicomp</p>
-      </header>
-
-      <div className="container">
-        <div className="config chats-abertos">
-          <div className="campo" style={{ flexBasis: '100%' }}>
-            <div className="chats-header">
-              <label style={{ marginBottom: 0 }}>Atendimentos abertos</label>
-              <button className="btn-atualizar" onClick={buscarChatsAbertos} disabled={carregandoChats} type="button">
-                {carregandoChats ? 'Atualizando...' : '↻ Atualizar'}
-              </button>
-            </div>
-            {!carregandoChats && chatsAbertos.length === 0 && (
-              <div className="vazio">Nenhum atendimento aberto no momento.</div>
-            )}
-            {chatsAbertos.length > 0 && (
-              <div className="lista-chats">
-                {chatsAbertos.map((chat) => (
-                  <div
-                    key={chat.id}
-className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'}
-                    onClick={() => selecionarChatAberto(chat)}
-                  >
-                    <div className="chat-nome">{chat.nome || chat.telefone || 'Sem nome'}</div>
-                    <div className="chat-msg">{chat.ultimaMensagem || '(sem mensagem)'}</div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+    <div className={mobilePane === 'conversa' ? 'app pane-conversa' : 'app'}>
+      {/* ===== Coluna lateral: lista de clientes ===== */}
+      <aside className="sidebar">
+        <div className="sidebar-top">
+          <img src="/logo/logo_wordmark.png" alt="Dicomp" className="sidebar-logo" />
+          <button className="btn-refresh" onClick={buscarChatsAbertos} disabled={carregandoChats} type="button" title="Atualizar lista">
+            {carregandoChats ? '…' : '↻'}
+          </button>
         </div>
-
-        {cnpjInfo && cnpjAuto && (
-          <div className="cnpj-auto">
-            <span><strong>CNPJ detectado na conversa:</strong> {cnpj || ''} — {cnpjInfo.empresa.razao}</span>
-            <span className={cnpjInfo.elegivel ? 'tag-ok' : 'tag-neutro'}>
-              {cnpjInfo.elegivel ? 'elegível pro Direct' : 'sem CNAE elegível'}
-            </span>
-          </div>
-        )}
-
-        {resetTeste && (
-          <div className="reset-aviso">
-            ↺ Conversa reiniciada (teste) — tratando como <strong>cliente novo</strong>. Envie a próxima mensagem no WhatsApp e clique no chat de novo.
-          </div>
-        )}
-
-        {conversaUsadaIA && (
-          <div className="ia-controles">
-            <div className="ia-controles-linha">
-              <span className="ia-controles-label">Cadastro no Db1:</span>
-              <div className="seg">
-                <button type="button" className={cadastroStatus === 'nao_sei' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('nao_sei')}>Não sei</button>
-                <button type="button" className={cadastroStatus === 'sim' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('sim')}>Tem cadastro</button>
-                <button type="button" className={cadastroStatus === 'nao' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('nao')}>Sem cadastro</button>
+        <div className="sidebar-sub">Atendimentos abertos</div>
+        <div className="lista-chats">
+          {carregandoChats && chatsAbertos.length === 0 && <div className="vazio">Carregando…</div>}
+          {!carregandoChats && chatsAbertos.length === 0 && <div className="vazio">Nenhum atendimento aberto.</div>}
+          {chatsAbertos.map((chat) => (
+            <button
+              key={chat.id}
+              type="button"
+              className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'}
+              onClick={() => selecionarChatAberto(chat)}
+            >
+              <div className="avatar">{inicial(chat.nome || chat.telefone)}</div>
+              <div className="chat-item-txt">
+                <div className="chat-nome">{chat.nome || chat.telefone || 'Sem nome'}</div>
+                <div className="chat-msg">{chat.ultimaMensagem || '(sem mensagem)'}</div>
               </div>
-              <button type="button" className="btn-azul btn-gerar" onClick={() => sugerirRespostaIA(conversaUsadaIA)} disabled={carregandoIA}>
-                {carregandoIA ? 'Gerando...' : '↻ Gerar de novo'}
-              </button>
-            </div>
-            <div className="ia-controles-dica">Marque o cadastro (ou busque o consultor/CNPJ acima) e clique em “Gerar de novo” pra IA reescrever com esse contexto.</div>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      {/* ===== Conversa ===== */}
+      <main className="conversa">
+        {!chatSelecionadoId ? (
+          <div className="placeholder">
+            <div className="placeholder-ico">💬</div>
+            <p>Selecione um atendimento na coluna ao lado para começar.</p>
           </div>
-        )}
-
-        {carregandoIA && <div className="ia-status">Analisando a conversa do cliente...</div>}
-        {erroIA && <div className="erro" style={{ marginBottom: 12 }}>A sugestão da IA falhou: {erroIA}</div>}
-
-        {sugestaoIA && (
-          <div className="card destaque-ia">
-            <div className="card-top">
-              <span className="num">IA</span>
-              <div>
-                <div className="titulo">Resposta sugerida — {sugestaoIA.t}</div>
-                <div className="situacao">{sugestaoIA.q}</div>
+        ) : (
+          <>
+            <div className="conversa-header">
+              <button className="btn-voltar" onClick={() => setMobilePane('lista')} type="button" title="Voltar">←</button>
+              <div className="avatar avatar-header">{inicial(nomeCliente || telCliente)}</div>
+              <div className="conversa-header-txt">
+                <div className="conversa-nome">{nomeCliente || telCliente || 'Cliente'}</div>
+                <div className="conversa-sub">
+                  {telCliente || '—'}
+                  {cnpjInfo && cnpjAuto ? ` · ${cnpjInfo.empresa.razao}` : ''}
+                </div>
               </div>
+              <button className="btn-ferramentas" onClick={() => setMostrarManual(true)} type="button">🛠 Ferramentas</button>
             </div>
-            <div className="card-body">
-              <textarea
-                className="msg-edit"
-                value={mensagemEditavel}
-                onChange={(e) => setMensagemEditavel(e.target.value)}
-                rows={Math.min(16, Math.max(3, mensagemEditavel.split('\n').length + 1))}
-              />
-              <div className="dica-edit">Texto reescrito pela IA — você pode editar antes de enviar.</div>
-              <details className="ver-conversa">
-                <summary>Ver conversa que a IA analisou</summary>
-                <pre className="msg-conversa">{conversaUsadaIA || '(vazia)'}</pre>
-              </details>
-              <details className="ver-conversa">
-                <summary>Ver raciocínio da IA</summary>
-                <pre className="msg-conversa">{raciocinioIA || '(sem raciocínio registrado)'}</pre>
-              </details>
-              <div className="acoes">
-                <button className="btn-borda" onClick={() => copiar('ia-sugestao', mensagemEditavel)}>
-                  {statusEnvio['ia-sugestao'] === 'copiado' ? 'Copiado!' : 'Copiar'}
-                </button>
-                <button className="btn-verde" onClick={() => enviar('ia-sugestao', mensagemEditavel)} disabled={statusEnvio['ia-sugestao'] === 'enviando' || !mensagemEditavel.trim()}>
-                  {statusEnvio['ia-sugestao'] === 'enviando' ? 'Enviando...' : statusEnvio['ia-sugestao'] === 'ok' ? 'Enviada!' : statusEnvio['ia-sugestao'] === 'erro' ? 'Erro — tentar de novo' : 'Enviar no WhatsApp'}
-                </button>
+
+            <div className="conversa-corpo" ref={corpoRef}>
+              {cnpjInfo && cnpjAuto && (
+                <div className="cnpj-auto">
+                  <span><strong>CNPJ detectado:</strong> {cnpj || ''} — {cnpjInfo.empresa.razao}</span>
+                  <span className={cnpjInfo.elegivel ? 'tag-ok' : 'tag-neutro'}>
+                    {cnpjInfo.elegivel ? 'elegível pro Direct' : 'sem CNAE elegível'}
+                  </span>
+                </div>
+              )}
+              {resetTeste && (
+                <div className="reset-aviso">
+                  ↺ Conversa reiniciada (teste) — tratando como <strong>cliente novo</strong>.
+                </div>
+              )}
+              {conversaMensagens.length === 0 && <div className="conversa-vazia">Sem mensagens ainda.</div>}
+              {conversaMensagens.map((m, i) => (
+                <div key={i} className={'bolha ' + (m.quem === 'Cliente' ? 'entrada' : m.quem === 'Bot' ? 'bot' : 'saida')}>
+                  <span className="bolha-quem">{m.quem}</span>
+                  <div className="bolha-txt">{m.texto}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="compositor">
+              {erroIA && <div className="erro">A sugestão da IA falhou: {erroIA}</div>}
+              {carregandoIA && <div className="ia-status">Analisando a conversa…</div>}
+              {sugestaoIA && (
+                <div className="sug-cab">
+                  <span className="sug-tag">Sugestão da IA</span>
+                  <span className="sug-titulo">{sugestaoIA.t}</span>
+                  <details className="sug-porque">
+                    <summary>por quê?</summary>
+                    <div className="sug-porque-txt">{raciocinioIA || '(sem raciocínio)'}</div>
+                  </details>
+                </div>
+              )}
+              {conversaUsadaIA && (
+                <div className="cc">
+                  <span className="cc-label">Cadastro:</span>
+                  <div className="seg">
+                    <button type="button" className={cadastroStatus === 'nao_sei' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('nao_sei')}>Não sei</button>
+                    <button type="button" className={cadastroStatus === 'sim' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('sim')}>Tem</button>
+                    <button type="button" className={cadastroStatus === 'nao' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('nao')}>Não tem</button>
+                  </div>
+                  <button type="button" className="btn-gerar-mini" onClick={() => sugerirRespostaIA(conversaUsadaIA)} disabled={carregandoIA}>
+                    {carregandoIA ? '…' : '↻ Gerar de novo'}
+                  </button>
+                </div>
+              )}
+              <div className="compositor-linha">
+                <textarea
+                  className="composer-input"
+                  value={mensagemEditavel}
+                  onChange={(e) => setMensagemEditavel(e.target.value)}
+                  placeholder="A sugestão da IA aparece aqui — edite e envie"
+                  rows={Math.min(10, Math.max(2, mensagemEditavel.split('\n').length + 1))}
+                />
+                <div className="compositor-botoes">
+                  <button className="btn-borda" onClick={() => copiar('ia-sugestao', mensagemEditavel)} disabled={!mensagemEditavel.trim()}>
+                    {statusEnvio['ia-sugestao'] === 'copiado' ? 'Copiado!' : 'Copiar'}
+                  </button>
+                  <button className="btn-verde" onClick={() => enviar('ia-sugestao', mensagemEditavel)} disabled={statusEnvio['ia-sugestao'] === 'enviando' || !mensagemEditavel.trim()}>
+                    {statusEnvio['ia-sugestao'] === 'enviando' ? 'Enviando…' : statusEnvio['ia-sugestao'] === 'ok' ? 'Enviada!' : statusEnvio['ia-sugestao'] === 'erro' ? 'Erro — tentar de novo' : 'Enviar no WhatsApp'}
+                  </button>
+                </div>
               </div>
+              {erro && <div className="erro">{erro}</div>}
             </div>
-          </div>
+          </>
         )}
+      </main>
 
-        {erro && <div className="erro" style={{ marginBottom: 12 }}>{erro}</div>}
-
-        <button className="btn-manual-toggle" onClick={() => setMostrarManual((v) => !v)} type="button">
-          {mostrarManual ? '▴ Ocultar ajustes manuais' : '▾ Ajustar manualmente / ver todas as mensagens'}
-        </button>
-
-        {mostrarManual && (
-        <>
+      {/* ===== Drawer de ferramentas (config, templates, CNPJ, registrar) ===== */}
+      {mostrarManual && (
+        <div className="drawer-backdrop" onClick={() => setMostrarManual(false)}>
+          <div className="drawer" onClick={(e) => e.stopPropagation()}>
+            <div className="drawer-top">
+              <strong>Ferramentas do atendimento</strong>
+              <button className="drawer-fechar" onClick={() => setMostrarManual(false)} type="button">✕</button>
+            </div>
+            <div className="drawer-corpo">
         <div className="config">
           <div className="campo">
             <label>Nome do cliente</label>
@@ -743,36 +814,111 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
           </button>
         </div>
         )}
-        </>
-        )}
-      </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <style>{`
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        .pagina { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: #f4f6fb; color: #22293a; min-height: 100vh; padding-bottom: 60px; }
-        header { background: linear-gradient(135deg, #12276b, #1c3f94); color: #fff; padding: 24px 20px 36px; text-align: center; }
-        header .logo { height: 34px; width: auto; background: #fff; padding: 6px 14px; border-radius: 10px; }
-        header p { opacity: .85; font-size: .85rem; margin-top: 8px; }
-        .container { max-width: 820px; margin: 0 auto; padding: 0 16px; }
-        .config { background: #fff; border: 1px solid #c6d4f2; border-radius: 14px; padding: 16px; margin: -18px auto 20px; box-shadow: 0 4px 14px rgba(28,63,148,.10); display: flex; flex-wrap: wrap; gap: 12px; }
-        .campo { flex: 1; min-width: 240px; }
-        .campo label { font-size: .72rem; font-weight: 600; color: #1c3f94; text-transform: uppercase; letter-spacing: .5px; display: block; margin-bottom: 4px; }
+        html, body { height: 100%; }
+        .app { display: flex; height: 100vh; overflow: hidden; font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; color: #22293a; background: #eef1f7; }
         input { width: 100%; padding: 9px 12px; border: 1px solid #c6d4f2; border-radius: 8px; font-size: .95rem; }
         input:focus { outline: 2px solid #1c3f94; border-color: #1c3f94; }
-        .linha { display: flex; gap: 8px; }
         button { border: none; border-radius: 8px; padding: 9px 14px; font-weight: 700; font-size: .88rem; cursor: pointer; white-space: nowrap; }
-        button:disabled { opacity: .6; cursor: not-allowed; }
+        button:disabled { opacity: .55; cursor: not-allowed; }
         .btn-azul { background: #1c3f94; color: #fff; }
-        .btn-azul:hover { background: #12276b; }
+        .btn-azul:hover:not(:disabled) { background: #12276b; }
         .btn-verde { background: #1e9e5a; color: #fff; }
-        .btn-verde:hover { background: #157a44; }
+        .btn-verde:hover:not(:disabled) { background: #157a44; }
         .btn-borda { background: #fff; color: #1c3f94; border: 1px solid #1c3f94; }
-        .btn-borda:hover { background: #eaf0fc; }
+        .btn-borda:hover:not(:disabled) { background: #eaf0fc; }
+        .erro { color: #c02b2b; font-size: .82rem; margin: 4px 0; }
+        .linha { display: flex; gap: 8px; }
+
+        /* ===== Sidebar ===== */
+        .sidebar { width: 340px; flex-shrink: 0; background: #fff; border-right: 1px solid #e1e6f0; display: flex; flex-direction: column; }
+        .sidebar-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; background: linear-gradient(135deg, #12276b, #1c3f94); padding: 14px 16px; }
+        .sidebar-logo { height: 26px; width: auto; background: #fff; padding: 5px 10px; border-radius: 8px; }
+        .btn-refresh { background: rgba(255,255,255,.16); color: #fff; width: 34px; height: 34px; padding: 0; border-radius: 50%; font-size: 1rem; }
+        .btn-refresh:hover:not(:disabled) { background: rgba(255,255,255,.28); }
+        .sidebar-sub { font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: #6b7385; padding: 12px 16px 6px; }
+        .lista-chats { flex: 1; overflow-y: auto; padding: 0 8px 8px; display: flex; flex-direction: column; gap: 2px; }
+        .chat-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; background: none; border-radius: 10px; padding: 10px; cursor: pointer; }
+        .chat-item:hover { background: #f2f5fb; }
+        .chat-item.selecionado { background: #eaf0fc; }
+        .avatar { width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; background: #1c3f94; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 1.05rem; }
+        .chat-item-txt { min-width: 0; flex: 1; }
+        .chat-nome { font-weight: 700; font-size: .9rem; color: #22293a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .chat-msg { font-size: .8rem; color: #6b7385; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .vazio { font-size: .82rem; color: #97a0af; padding: 14px; text-align: center; }
+
+        /* ===== Conversa ===== */
+        .conversa { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #e7ebf3; }
+        .placeholder { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: #8a93a6; text-align: center; padding: 24px; }
+        .placeholder-ico { font-size: 3rem; }
+        .conversa-header { display: flex; align-items: center; gap: 12px; background: #1c3f94; color: #fff; padding: 10px 16px; }
+        .conversa-header .avatar-header { background: #fff; color: #1c3f94; width: 40px; height: 40px; }
+        .btn-voltar { display: none; background: none; color: #fff; padding: 4px 8px; font-size: 1.2rem; }
+        .conversa-header-txt { flex: 1; min-width: 0; }
+        .conversa-nome { font-weight: 700; font-size: 1rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .conversa-sub { font-size: .76rem; opacity: .85; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .btn-ferramentas { background: rgba(255,255,255,.16); color: #fff; font-size: .82rem; }
+        .btn-ferramentas:hover { background: rgba(255,255,255,.28); }
+        .conversa-corpo { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+        .conversa-vazia { text-align: center; color: #8a93a6; font-size: .85rem; margin: auto; }
+        .bolha { max-width: 74%; padding: 7px 11px; border-radius: 12px; font-size: .9rem; line-height: 1.4; box-shadow: 0 1px 1px rgba(0,0,0,.06); }
+        .bolha-quem { display: block; font-size: .68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; opacity: .6; margin-bottom: 2px; }
+        .bolha-txt { white-space: pre-wrap; word-break: break-word; }
+        .bolha.entrada { align-self: flex-start; background: #fff; color: #22293a; border-top-left-radius: 3px; }
+        .bolha.saida { align-self: flex-end; background: #dcf8c6; color: #103a24; border-top-right-radius: 3px; }
+        .bolha.saida .bolha-quem { color: #1e7a45; }
+        .bolha.bot { align-self: center; background: #eceff5; color: #6b7385; font-size: .82rem; max-width: 88%; text-align: center; box-shadow: none; }
+
+        /* ===== Banners ===== */
+        .cnpj-auto { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #eaf0fc; border: 1px solid #c6d4f2; border-left: 4px solid #1c3f94; border-radius: 8px; padding: 9px 12px; font-size: .8rem; color: #1c3f94; }
+        .cnpj-auto .tag-ok { background: #e5f7ee; color: #12603a; border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .72rem; white-space: nowrap; }
+        .cnpj-auto .tag-neutro { background: #fff7e0; color: #7a6216; border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .72rem; white-space: nowrap; }
+        .reset-aviso { background: #fff7e0; border: 1px solid #f0d98c; border-left: 4px solid #d99a06; color: #7a6216; border-radius: 8px; padding: 9px 12px; font-size: .8rem; }
+
+        /* ===== Compositor ===== */
+        .compositor { border-top: 1px solid #d5dced; background: #f7f9fc; padding: 10px 16px 14px; }
+        .ia-status { font-size: .82rem; color: #1c3f94; margin-bottom: 6px; }
+        .sug-cab { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; font-size: .82rem; }
+        .sug-tag { background: #1c3f94; color: #fff; border-radius: 20px; padding: 2px 10px; font-weight: 800; font-size: .68rem; text-transform: uppercase; letter-spacing: .04em; }
+        .sug-titulo { font-weight: 700; color: #22293a; }
+        .sug-porque { margin-left: auto; }
+        .sug-porque summary { font-size: .76rem; color: #1c3f94; cursor: pointer; font-weight: 600; }
+        .sug-porque-txt { font-size: .78rem; color: #6b7385; background: #eef1f7; border-radius: 8px; padding: 8px 10px; margin-top: 6px; max-width: 520px; }
+        .cc { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+        .cc-label { font-size: .76rem; font-weight: 700; color: #1c3f94; }
+        .seg { display: inline-flex; border: 1px solid #c6d4f2; border-radius: 8px; overflow: hidden; }
+        .seg-btn { background: #fff; color: #1c3f94; border: none; border-radius: 0; padding: 6px 11px; font-size: .78rem; font-weight: 600; }
+        .seg-btn + .seg-btn { border-left: 1px solid #c6d4f2; }
+        .seg-btn.ativo { background: #1c3f94; color: #fff; }
+        .btn-gerar-mini { margin-left: auto; background: #eaf0fc; color: #1c3f94; font-size: .78rem; padding: 6px 11px; }
+        .btn-gerar-mini:hover:not(:disabled) { background: #dbe6fb; }
+        .compositor-linha { display: flex; gap: 8px; align-items: flex-end; }
+        .composer-input { flex: 1; white-space: pre-wrap; font-family: inherit; font-size: .92rem; background: #fff; border: 1px solid #c6d4f2; border-radius: 12px; padding: 10px 12px; resize: none; line-height: 1.4; max-height: 220px; }
+        .composer-input:focus { outline: 2px solid #1c3f94; border-color: #1c3f94; }
+        .compositor-botoes { display: flex; flex-direction: column; gap: 6px; }
+        .compositor-botoes .btn-verde { min-width: 150px; }
+
+        /* ===== Drawer de ferramentas ===== */
+        .drawer-backdrop { position: fixed; inset: 0; background: rgba(18,39,107,.35); display: flex; justify-content: flex-end; z-index: 50; }
+        .drawer { width: 460px; max-width: 92vw; height: 100%; background: #f4f6fb; display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,.18); }
+        .drawer-top { display: flex; align-items: center; justify-content: space-between; background: #1c3f94; color: #fff; padding: 14px 16px; font-size: .95rem; }
+        .drawer-fechar { background: rgba(255,255,255,.16); color: #fff; width: 30px; height: 30px; padding: 0; border-radius: 50%; }
+        .drawer-corpo { flex: 1; overflow-y: auto; padding: 16px; }
+
+        /* ===== Utilitários usados no drawer ===== */
+        .config { background: #fff; border: 1px solid #c6d4f2; border-radius: 14px; padding: 16px; margin: 0 0 16px; display: flex; flex-wrap: wrap; gap: 12px; }
+        .campo { flex: 1; min-width: 200px; }
+        .campo label { font-size: .72rem; font-weight: 600; color: #1c3f94; text-transform: uppercase; letter-spacing: .5px; display: block; margin-bottom: 4px; }
         .ramo-info { width: 100%; background: #eaf0fc; border-left: 4px solid #1c3f94; border-radius: 8px; padding: 8px 12px; font-size: .85rem; color: #1c3f94; }
         .consultor-box { width: 100%; background: #e5f7ee; border-left: 4px solid #1e9e5a; border-radius: 8px; padding: 8px 12px; font-size: .88rem; }
-        .erro { width: 100%; color: #c02b2b; font-size: .82rem; }
-        .tabs { display: flex; gap: 8px; margin-bottom: 18px; flex-wrap: wrap; }
-        .tab { flex: 1; min-width: 150px; padding: 12px 10px; border: 1px solid #c6d4f2; background: #fff; color: #1c3f94; border-radius: 10px; }
+        .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+        .tab { flex: 1; min-width: 120px; padding: 10px; border: 1px solid #c6d4f2; background: #fff; color: #1c3f94; border-radius: 10px; }
         .tab.ativa { background: #1c3f94; color: #fff; }
         .card { background: #fff; border: 1px solid #c6d4f2; border-radius: 14px; margin-bottom: 16px; overflow: hidden; }
         .card.interno { border-color: #f0d98c; }
@@ -788,7 +934,7 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
         .nota { font-size: .78rem; color: #7a6216; background: #fff7e0; border: 1px solid #f0d98c; border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
         .acoes { display: flex; gap: 8px; flex-wrap: wrap; }
         .acoes .btn-verde { flex: 1; }
-        .rodape { margin: 24px 0; }
+        .rodape { margin: 8px 0 0; }
         .rodape .btn-azul { width: 100%; padding: 12px; }
         .veredicto { margin-top: 8px; padding: 9px 12px; border-radius: 8px; font-size: .88rem; font-weight: 600; }
         .veredicto.ok { background: #e5f7ee; border-left: 4px solid #1e9e5a; color: #12603a; }
@@ -796,41 +942,17 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
         .cnaes { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }
         .cnae { font-size: .78rem; color: #6b7385; background: #f4f6fb; border-radius: 6px; padding: 5px 9px; }
         .cnae.bate { color: #12603a; background: #e5f7ee; font-weight: 600; }
-        .chats-abertos { margin-bottom: 12px; }
-        .lista-chats { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow-y: auto; }
-        .chat-item { background: #f4f6fb; border: 1px solid #dfe1e6; border-radius: 8px; padding: 8px 10px; cursor: pointer; }
-        .chat-item:hover { background: #eaf0fc; }
-        .chat-item.selecionado { background: #eaf0fc; border-color: #1c3f94; }
-        .chat-nome { font-weight: 700; font-size: .85rem; color: #22293a; }
-        .chat-msg { font-size: .78rem; color: #6b7385; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .ia-status { text-align: center; font-size: .85rem; color: #1c3f94; margin-bottom: 12px; }
-        .cnpj-auto { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #eaf0fc; border: 1px solid #c6d4f2; border-left: 4px solid #1c3f94; border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; font-size: .82rem; color: #1c3f94; }
-        .cnpj-auto .tag-ok { background: #e5f7ee; color: #12603a; border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .74rem; white-space: nowrap; }
-        .cnpj-auto .tag-neutro { background: #fff7e0; color: #7a6216; border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .74rem; white-space: nowrap; }
-        .reset-aviso { background: #fff7e0; border: 1px solid #f0d98c; border-left: 4px solid #d99a06; color: #7a6216; border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; font-size: .82rem; }
-        .ia-controles { background: #fff; border: 1px solid #c6d4f2; border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
-        .ia-controles-linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .ia-controles-label { font-size: .78rem; font-weight: 700; color: #1c3f94; }
-        .seg { display: inline-flex; border: 1px solid #c6d4f2; border-radius: 8px; overflow: hidden; }
-        .seg-btn { background: #fff; color: #1c3f94; border: none; border-radius: 0; padding: 7px 12px; font-size: .8rem; font-weight: 600; }
-        .seg-btn + .seg-btn { border-left: 1px solid #c6d4f2; }
-        .seg-btn.ativo { background: #1c3f94; color: #fff; }
-        .btn-gerar { margin-left: auto; }
-        .ia-controles-dica { font-size: .72rem; color: #6b7385; margin-top: 8px; }
-        .msg-edit { width: 100%; white-space: pre-wrap; font-family: inherit; font-size: .9rem; background: #f4f6fb; border: 1px solid #c6d4f2; border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; resize: vertical; line-height: 1.4; }
-        .msg-edit:focus { outline: 2px solid #1c3f94; border-color: #1c3f94; }
-        .dica-edit { font-size: .72rem; color: #6b7385; margin-bottom: 10px; }
-        .card.destaque-ia { border: 2px solid #1c3f94; box-shadow: 0 4px 14px rgba(28,63,148,.18); }
-        .card.destaque-ia .card-top { background: #eaf0fc; }
-        .card.destaque-ia .num { background: #1c3f94; width: auto; padding: 0 8px; border-radius: 14px; font-size: .7rem; }
-        .chats-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-        .btn-atualizar { background: none; border: none; color: #1c3f94; font-size: .78rem; font-weight: 700; padding: 4px 6px; }
-        .vazio { font-size: .82rem; color: #97a0af; padding: 8px 0; }
-        .btn-manual-toggle { display: block; width: 100%; text-align: center; background: none; border: none; color: #6b7385; font-size: .82rem; font-weight: 600; padding: 10px; margin-bottom: 8px; }
-        .btn-manual-toggle:hover { color: #1c3f94; }
-        .ver-conversa { margin: 4px 0 10px; }
-        .ver-conversa summary { font-size: .78rem; color: #1c3f94; cursor: pointer; font-weight: 600; }
-        .msg-conversa { white-space: pre-wrap; font-family: inherit; font-size: .8rem; background: #f4f6fb; border: 1px dashed #c6d4f2; border-radius: 8px; padding: 8px 10px; margin-top: 6px; color: #6b7385; }
+
+        /* ===== Responsivo (mobile: uma coluna por vez) ===== */
+        @media (max-width: 760px) {
+          .sidebar { width: 100%; }
+          .conversa { display: none; }
+          .app.pane-conversa .sidebar { display: none; }
+          .app.pane-conversa .conversa { display: flex; }
+          .btn-voltar { display: inline-flex; }
+          .bolha { max-width: 85%; }
+          .compositor-botoes .btn-verde { min-width: 0; }
+        }
       `}</style>
     </div>
   );
