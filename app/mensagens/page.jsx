@@ -13,13 +13,24 @@ async function sbGet(path) {
   if (!r.ok) throw new Error('Supabase GET falhou');
   return r.json();
 }
+async function sbErro(r, metodo) {
+  const detalhe = await r.text().catch(() => '');
+  // 404/PGRST205 = tabela não existe; 401/403 = RLS/permissão.
+  let dica = '';
+  if (r.status === 404 || /PGRST205|does not exist|could not find the table/i.test(detalhe)) {
+    dica = ' — a tabela não existe (rode o SQL de criação no Supabase).';
+  } else if (r.status === 401 || r.status === 403) {
+    dica = ' — permissão negada (RLS ligada? desative a RLS dessa tabela).';
+  }
+  return new Error(`Supabase ${metodo} ${r.status}${dica}${detalhe ? ' · ' + detalhe.slice(0, 160) : ''}`);
+}
 async function sbPost(path, body, prefer = 'return=representation') {
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
     method: 'POST',
     headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', Prefer: prefer },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error('Supabase POST falhou');
+  if (!r.ok) throw await sbErro(r, 'POST');
   return r.json();
 }
 async function sbPatch(path, body) {
@@ -28,7 +39,7 @@ async function sbPatch(path, body) {
     headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error('Supabase PATCH falhou');
+  if (!r.ok) throw await sbErro(r, 'PATCH');
   return r.json();
 }
 async function obterProximoVendedor(ramo) {
@@ -461,8 +472,8 @@ const c = consultorAtual();
     try {
       await sbPost('tickets_atendimento', registro, 'resolution=ignore-duplicates,return=representation');
       await carregarTickets();
-    } catch {
-      setErro('Não consegui registrar o ticket (a tabela tickets_atendimento existe no Supabase?).');
+    } catch (e) {
+      setErro('Não consegui registrar o ticket. ' + (e?.message || ''));
     }
   }
 
@@ -475,8 +486,9 @@ const c = consultorAtual();
       await sbPatch(`tickets_atendimento?chat_id=eq.${encodeURIComponent(chatId)}`, patch);
       await carregarTickets();
       setTicketBusy((s) => ({ ...s, [chatId]: 'criado' }));
-    } catch {
+    } catch (e) {
       setTicketBusy((s) => ({ ...s, [chatId]: 'erro' }));
+      setErro('Não consegui aprovar o ticket. ' + (e?.message || ''));
     }
   }
 
