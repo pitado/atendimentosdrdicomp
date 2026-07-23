@@ -85,6 +85,7 @@ ${lista}
 
 TAREFA:
 1. Identifique em que ponto da conversa o cliente está e escolha, pelo índice, a melhor mensagem-padrão pra responder AGORA.
+   - IMPORTANTE: se o cliente JÁ forneceu na conversa o que uma opção pediria (por exemplo já mandou nome, CNPJ e/ou e-mail), NÃO escolha uma opção que peça esses mesmos dados de novo. Avance pro próximo passo lógico (confirmar/verificar o cadastro, perguntar as marcas/produtos da demanda, ou transferir pro consultor).
 2. Reescreva o texto-base dessa opção como uma mensagem de WhatsApp natural e profissional, do jeito que uma pessoa simpática do CS escreveria. Regras da reescrita:
    - Mantenha a INTENÇÃO, os LINKS e qualquer informação essencial do texto-base. NÃO invente dados (preço, prazo, cadastro, nomes) que não estejam no contexto.
    - Personalize com o contexto (nome do cliente, produto, consultor) quando fizer sentido.

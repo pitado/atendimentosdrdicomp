@@ -529,41 +529,39 @@ const c = consultorAtual();
         setResetTeste(!!j.resetado);
         const msgs = Array.isArray(j.mensagens) ? j.mensagens : [];
         setConversaMensagens(msgs);
-        // Finalizado = já tem ticket OU a conversa contém o handoff. Nesse caso
-        // NÃO chamamos a IA (economiza OpenAI) — só mostramos a conversa.
+        // A IA NÃO gera nada automaticamente — só quando você clicar em "Gerar".
+        // Aqui só detectamos o CNPJ (grátis) pro contexto/ticket.
+        setConversaUsadaIA('');
+        setRaciocinioIA('');
+        setSugestaoIA(null);
+        setMensagemEditavel('');
         const temHandoff = msgs.some((m) => m.quem === 'Atendente' && ehHandoff(m.texto));
         const finalizado = !!ticketDoChat(chat.id) || temHandoff;
-        if (finalizado) {
-          setConversaUsadaIA('');
-          setRaciocinioIA('');
-          setSugestaoIA(null);
-          setMensagemEditavel('');
-          // CNPJ é grátis (CNPJá): detecta pra preencher o ticket, mas NÃO chama
-          // a IA (OpenAI). Cria o ticket já com a razão social.
-          const infoCnpj = j.transcricao ? await detectarEVerificarCnpj(j.transcricao) : null;
-          if (temHandoff) criarTicketPendente(chat, '', msgs, infoCnpj);
-        } else if (j.transcricao) {
-          // Detecta + verifica o CNPJ da conversa antes de pedir a sugestão,
-          // e passa o resultado direto pra IA (o estado ainda não atualizou aqui).
-          const infoCnpj = await detectarEVerificarCnpj(j.transcricao);
-          sugerirRespostaIA(j.transcricao, infoCnpj);
-        } else {
-          // Conversa vazia (ex.: reset de teste com "oitchencha"): trata como
-          // cliente novo — limpa a sugestão e espera a próxima mensagem.
-          setConversaUsadaIA('');
-          setRaciocinioIA('');
-        }
+        const infoCnpj = j.transcricao ? await detectarEVerificarCnpj(j.transcricao) : null;
+        if (finalizado && temHandoff) criarTicketPendente(chat, '', msgs, infoCnpj);
       } else if (chat.ultimaMensagem) {
-        // não conseguiu o histórico — segue com o que já tinha
+        // não conseguiu o histórico — mostra ao menos a última mensagem
         setConversaMensagens([{ quem: 'Cliente', texto: chat.ultimaMensagem }]);
-        sugerirRespostaIA('Cliente: ' + chat.ultimaMensagem);
       }
     } catch {
       if (chat.ultimaMensagem) {
         setConversaMensagens([{ quem: 'Cliente', texto: chat.ultimaMensagem }]);
-        sugerirRespostaIA('Cliente: ' + chat.ultimaMensagem);
       }
     }
+  }
+
+  // Gera a sugestão da IA sob demanda (botão "Gerar"), a partir da conversa
+  // atual — nunca automático.
+  function gerarSugestao() {
+    const transcricao = conversaMensagens
+      .filter((m) => m.texto)
+      .map((m) => `${m.quem}: ${m.texto}`)
+      .join('\n');
+    if (!transcricao) {
+      setErroIA('Ainda não há conversa pra a IA analisar.');
+      return;
+    }
+    sugerirRespostaIA(transcricao); // usa o cnpjInfo do estado (detectado ao abrir)
   }
 
   async function sugerirRespostaIA(mensagemCliente, cnpjInfoArg) {
@@ -888,7 +886,7 @@ const c = consultorAtual();
 
             <div className="compositor">
               {erroIA && <div className="erro">A sugestão da IA falhou: {erroIA}</div>}
-              {carregandoIA && <div className="ia-status">Analisando a conversa…</div>}
+              {carregandoIA && <div className="ia-status">Gerando sugestão…</div>}
               {sugestaoIA && (
                 <div className="sug-cab">
                   <span className="sug-tag">Sugestão da IA</span>
@@ -899,7 +897,7 @@ const c = consultorAtual();
                   </details>
                 </div>
               )}
-              {conversaUsadaIA && (
+              {!ticketAtual && (
                 <div className="cc">
                   <span className="cc-label">Cadastro:</span>
                   <div className="seg">
@@ -907,8 +905,8 @@ const c = consultorAtual();
                     <button type="button" className={cadastroStatus === 'sim' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('sim')}>Tem</button>
                     <button type="button" className={cadastroStatus === 'nao' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('nao')}>Não tem</button>
                   </div>
-                  <button type="button" className="btn-gerar-mini" onClick={() => sugerirRespostaIA(conversaUsadaIA)} disabled={carregandoIA}>
-                    {carregandoIA ? '…' : '↻ Gerar de novo'}
+                  <button type="button" className="btn-gerar-mini" onClick={gerarSugestao} disabled={carregandoIA}>
+                    {carregandoIA ? '…' : sugestaoIA ? '↻ Gerar de novo' : '✨ Gerar sugestão'}
                   </button>
                 </div>
               )}
@@ -917,7 +915,7 @@ const c = consultorAtual();
                   className="composer-input"
                   value={mensagemEditavel}
                   onChange={(e) => setMensagemEditavel(e.target.value)}
-                  placeholder="A sugestão da IA aparece aqui — edite e envie"
+                  placeholder="Clique em ✨ Gerar sugestão pra a IA escrever aqui — ou digite você mesmo"
                   rows={Math.min(10, Math.max(2, mensagemEditavel.split('\n').length + 1))}
                 />
                 <div className="compositor-botoes">
