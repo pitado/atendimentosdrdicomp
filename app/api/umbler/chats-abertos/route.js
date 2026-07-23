@@ -12,7 +12,7 @@ export async function GET() {
   }
 
   try {
-    const { items } = await listChats({ organizationId, pageSize: 50 });
+    const { items } = await listChats({ organizationId, take: 50 });
 
     // DEBUG temporário — remover depois de confirmar o formato real dos campos.
     if (items && items[0]) {

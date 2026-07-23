@@ -5,7 +5,7 @@
 // escolher qual combina melhor. Retorna só o índice dentro da lista
 // enviada — o painel (client-side) já sabe mapear esse índice de volta
 // pra aba+posição e montar a mensagem pronta pra enviar.
-// Precisa da env GEMINI_API_KEY (gratuita, via aistudio.google.com/apikey).
+// Precisa da env OPENAI_API_KEY (via platform.openai.com/api-keys).
 
 export async function POST(req) {
   let body;
@@ -25,9 +25,9 @@ export async function POST(req) {
     return Response.json({ ok: false, erro: 'Sem opções de mensagem pra comparar.' }, { status: 400 });
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return Response.json({ ok: false, erro: 'GEMINI_API_KEY não configurada.' }, { status: 500 });
+    return Response.json({ ok: false, erro: 'OPENAI_API_KEY não configurada.' }, { status: 500 });
   }
 
   const lista = opcoes.map((o, i) => `${i}. ${o.t} (situação: ${o.q})\nTexto da mensagem: """${o.m}"""`).join('\n\n');
@@ -52,17 +52,19 @@ Depois do seu raciocínio breve, termine sua resposta OBRIGATORIAMENTE com uma l
 RESPOSTA: <número da opção>`;
 
   try {
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 400, temperature: 0 },
-        }),
-      }
-    );
+    const r = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        max_tokens: 400,
+        temperature: 0,
+      }),
+    });
 
     if (!r.ok) {
       const detalhe = await r.text().catch(() => '');
@@ -70,7 +72,7 @@ RESPOSTA: <número da opção>`;
     }
 
     const data = await r.json();
-    const texto = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    const texto = data?.choices?.[0]?.message?.content || '';
     // Procura especificamente "RESPOSTA: N" — se não achar (a IA fugiu do
     // formato), cai pro último número mencionado no texto como reserva.
     const matchFormatado = texto.match(/RESPOSTA:\s*(\d+)/i);

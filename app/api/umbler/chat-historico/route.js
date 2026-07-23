@@ -1,9 +1,10 @@
 // GET /api/umbler/chat-historico?id=CHAT_ID
-// Busca o histórico completo de um chat (até 100 mensagens) e devolve já
-// formatado como uma conversa em texto, na ordem em que aconteceu — pra
-// dar contexto de verdade pra IA, não só a última mensagem do cliente.
+// Busca o histórico do chat na Umbler e devolve já formatado como uma conversa
+// em texto, na ordem em que aconteceu — pra dar contexto de verdade pra IA, não
+// só a última mensagem do cliente. Tenta puxar TODAS as mensagens (paginando a
+// rota relative-messages); se isso falhar, cai pras últimas ~100 do próprio chat.
 
-import { getChat } from '@/lib/umbler';
+import { getAllChatMessages, getChat } from '@/lib/umbler';
 
 export async function GET(req) {
   const { searchParams } = new URL(req.url);
@@ -13,8 +14,18 @@ export async function GET(req) {
   }
 
   try {
-    const chat = await getChat(chatId);
-    const mensagens = Array.isArray(chat.messages) ? chat.messages : [];
+    let mensagens = [];
+    try {
+      mensagens = await getAllChatMessages(chatId, { max: 300 });
+    } catch {
+      mensagens = [];
+    }
+    // Reserva: se a paginação não trouxe nada, usa as mensagens que já vêm
+    // embutidas no próprio chat (latestMessages).
+    if (mensagens.length === 0) {
+      const chat = await getChat(chatId, { includeMessages: 100 });
+      mensagens = Array.isArray(chat.latestMessages) ? chat.latestMessages : [];
+    }
 
     const ordenadas = [...mensagens].sort(
       (a, b) => new Date(a.eventAtUTC) - new Date(b.eventAtUTC)

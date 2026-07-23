@@ -30,7 +30,7 @@ export async function GET(req: NextRequest) {
   }
 
   // 2. Lista os chats mais recentes
-  const { items: chats } = await listChats({ organizationId, pageSize: 25 });
+  const { items: chats } = await listChats({ organizationId, take: 25 });
 
   let novos = 0;
 
@@ -56,7 +56,7 @@ export async function GET(req: NextRequest) {
     });
 
     // 4. Monta um rascunho de ticket com a mensagem mais longa do contato
-    const mensagensContato = (chatCompleto.messages ?? []).filter(
+    const mensagensContato = (chatCompleto.latestMessages ?? []).filter(
       (msg) => msg.source === "Contact"
     );
     const demanda = mensagensContato
