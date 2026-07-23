@@ -9,25 +9,50 @@
 // Retorna { ok, mensagem, raciocinio }.
 // Reaproveita getAllChatMessages/getChat de lib/umbler.ts e a mesma
 // OPENAI_API_KEY já configurada na Vercel.
+//
+// CORS: essa rota é chamada de fora do domínio da Vercel (a extensão roda
+// dentro da página da Umbler), então precisa liberar explicitamente os
+// headers de CORS — sem isso o navegador bloqueia a resposta mesmo que a
+// chamada tenha ido e voltado com sucesso.
 
 import { getAllChatMessages, getChat } from '@/lib/umbler';
+
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+function jsonCors(data, init) {
+  return Response.json(data, {
+    ...init,
+    headers: { ...CORS_HEADERS, ...(init?.headers || {}) },
+  });
+}
+
+// O navegador manda um OPTIONS "de teste" (preflight) antes do POST de
+// verdade, pra perguntar se a chamada cross-origin é permitida. Sem essa
+// resposta, o POST nem chega a ser enviado.
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
 
 export async function POST(req) {
   let body;
   try {
     body = await req.json();
   } catch {
-    return Response.json({ ok: false, erro: 'Corpo inválido — esperado JSON.' }, { status: 400 });
+    return jsonCors({ ok: false, erro: 'Corpo inválido — esperado JSON.' }, { status: 400 });
   }
 
   const chatId = (body?.chatId || '').toString().trim();
   if (!chatId) {
-    return Response.json({ ok: false, erro: 'Informe o chatId.' }, { status: 400 });
+    return jsonCors({ ok: false, erro: 'Informe o chatId.' }, { status: 400 });
   }
 
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) {
-    return Response.json({ ok: false, erro: 'OPENAI_API_KEY não configurada.' }, { status: 500 });
+    return jsonCors({ ok: false, erro: 'OPENAI_API_KEY não configurada.' }, { status: 500 });
   }
 
   // 1. Busca o histórico do chat (mesma lógica de /api/umbler/chat-historico).
@@ -40,7 +65,7 @@ export async function POST(req) {
     }
   } catch (err) {
     const detalhe = err instanceof Error ? err.message : String(err);
-    return Response.json({ ok: false, erro: 'Falha ao buscar histórico do chat na Umbler.', detalhe }, { status: 502 });
+    return jsonCors({ ok: false, erro: 'Falha ao buscar histórico do chat na Umbler.', detalhe }, { status: 502 });
   }
 
   const ordenadas = [...mensagens].sort((a, b) => new Date(a.eventAtUTC) - new Date(b.eventAtUTC));
@@ -53,7 +78,7 @@ export async function POST(req) {
     .join('\n');
 
   if (!transcricao) {
-    return Response.json({ ok: false, erro: 'Chat sem mensagens pra basear a sugestão.' }, { status: 400 });
+    return jsonCors({ ok: false, erro: 'Chat sem mensagens pra basear a sugestão.' }, { status: 400 });
   }
 
   // 2. Pede pra IA redigir a próxima mensagem, no mesmo tom das outras rotas.
@@ -95,7 +120,7 @@ Responda SOMENTE com um JSON válido, sem texto fora dele, neste formato exato:
 
     if (!r.ok) {
       const detalhe = await r.text().catch(() => '');
-      return Response.json({ ok: false, erro: 'Falha ao consultar a IA.', detalhe }, { status: 502 });
+      return jsonCors({ ok: false, erro: 'Falha ao consultar a IA.', detalhe }, { status: 502 });
     }
 
     const data = await r.json();
@@ -112,12 +137,12 @@ Responda SOMENTE com um JSON válido, sem texto fora dele, neste formato exato:
     const raciocinio = parsed && typeof parsed.raciocinio === 'string' ? parsed.raciocinio : '';
 
     if (!mensagem) {
-      return Response.json({ ok: false, erro: 'A IA não retornou uma mensagem válida.', detalhe: texto }, { status: 502 });
+      return jsonCors({ ok: false, erro: 'A IA não retornou uma mensagem válida.', detalhe: texto }, { status: 502 });
     }
 
-    return Response.json({ ok: true, mensagem, raciocinio });
+    return jsonCors({ ok: true, mensagem, raciocinio });
   } catch (err) {
     const detalhe = err instanceof Error ? err.message : String(err);
-    return Response.json({ ok: false, erro: 'Erro ao chamar a IA.', detalhe }, { status: 502 });
+    return jsonCors({ ok: false, erro: 'Erro ao chamar a IA.', detalhe }, { status: 502 });
   }
 }
