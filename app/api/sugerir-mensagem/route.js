@@ -103,7 +103,7 @@ Responda SOMENTE com um JSON válido, sem texto fora dele, neste formato exato:
         Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: 'gpt-4o',
         messages: [{ role: 'user', content: prompt }],
         max_tokens: 700,
         temperature: 0.4,
