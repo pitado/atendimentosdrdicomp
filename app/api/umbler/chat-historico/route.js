@@ -66,8 +66,9 @@ export async function GET(req) {
         quem: m.source === 'Contact' ? 'Cliente' : m.source === 'Bot' ? 'Bot' : 'Atendente',
         texto: m.content,
         em: m.eventAtUTC || null,
-        // Assinatura do atendente (nome de quem enviou), quando houver.
-        assinatura: m.prefix || '',
+        // Assinatura do atendente (nome de quem enviou), quando houver. Vem tipo
+        // "*Miguel Pita:*" — tira os asteriscos (negrito do WhatsApp) e o ":".
+        assinatura: (m.prefix || '').replace(/\*/g, '').replace(/\s*:\s*$/, '').trim(),
       }));
 
     const transcricao = estruturadas.map((m) => `${m.quem}: ${m.texto}`).join('\n');
