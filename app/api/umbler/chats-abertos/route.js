@@ -23,12 +23,15 @@ export async function GET() {
       .filter((c) => c.open)
       .map((c) => {
         const contato = c.contact || c.Contact || {};
+        const ultima = c.lastMessage || c.LastMessage || {};
         return {
           id: c.id,
           nome: contato.name || contato.Name || '',
           telefone: contato.phoneNumber || contato.PhoneNumber || contato.phone || contato.Phone || '',
-          ultimaMensagem: c.lastMessage?.content || c.LastMessage?.Content || '',
-          ultimaMensagemEm: c.lastMessage?.eventAtUTC || c.LastMessage?.EventAtUTC || null,
+          ultimaMensagem: ultima.content || ultima.Content || '',
+          ultimaMensagemEm: ultima.eventAtUTC || ultima.EventAtUTC || null,
+          // Quem mandou a última mensagem — pra separar Fila (Contact) de Chats.
+          ultimaMensagemSource: ultima.source || ultima.Source || '',
         };
       })
       .sort((a, b) => new Date(b.ultimaMensagemEm || 0) - new Date(a.ultimaMensagemEm || 0));

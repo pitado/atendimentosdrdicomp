@@ -13,13 +13,22 @@ async function sbGet(path) {
   if (!r.ok) throw new Error('Supabase GET falhou');
   return r.json();
 }
-async function sbPost(path, body) {
+async function sbPost(path, body, prefer = 'return=representation') {
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
     method: 'POST',
-    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', Prefer: prefer },
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error('Supabase POST falhou');
+  return r.json();
+}
+async function sbPatch(path, body) {
+  const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    method: 'PATCH',
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error('Supabase PATCH falhou');
   return r.json();
 }
 async function obterProximoVendedor(ramo) {
@@ -194,6 +203,24 @@ function inicial(txt) {
   return s ? s[0].toUpperCase() : '?';
 }
 
+function normalizar(s) {
+  return (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+// Detecta a mensagem de handoff pro consultor por trechos ESTÁVEIS (o nome e o
+// telefone do consultor mudam, então não entram na checagem). Quando isso é
+// enviado, o atendimento é finalizado e vira um ticket (Respondidos).
+function ehHandoff(texto) {
+  const t = normalizar(texto);
+  return t.includes('responsavel pelo seu atendimento') && t.includes('prazo de retorno');
+}
+
+// Tenta extrair o nome do consultor do texto do handoff ("O consultor NOME será...").
+function extrairConsultorHandoff(texto) {
+  const m = (texto || '').match(/consultor(?:a)?\s+(.+?)\s+ser[áa](?:\s|$)/i);
+  return m ? m[1].trim() : '';
+}
+
 export default function Mensagens() {
   const [aba, setAba] = useState('triagem');
   const [nomeCliente, setNomeCliente] = useState('');
@@ -226,6 +253,11 @@ export default function Mensagens() {
   const [carregandoIA, setCarregandoIA] = useState(false);
   const [erroIA, setErroIA] = useState('');
   const [mostrarManual, setMostrarManual] = useState(false);
+  const [faseAtiva, setFaseAtiva] = useState('fila'); // 'fila' | 'chats' | 'respondidos'
+  const [busca, setBusca] = useState('');
+  const [tickets, setTickets] = useState([]); // Respondidos (Supabase)
+  const [demandaEdits, setDemandaEdits] = useState({}); // edição de demanda por chat_id
+  const [ticketBusy, setTicketBusy] = useState({}); // status de ação por chat_id
   const corpoRef = useRef(null); // pra rolar a conversa pro fim
 
   function consultorAtual() {
@@ -297,6 +329,13 @@ export default function Mensagens() {
       if (j.ok) {
         // Mostra na conversa que a mensagem saiu (o refresh confirma depois).
         setConversaMensagens((ms) => [...ms, { quem: 'Atendente', texto }]);
+        // Se foi o handoff pro consultor, finaliza o atendimento -> Respondidos.
+        // Detecta pelo trecho estável do texto OU pelo template que a IA escolheu
+        // (caso a IA tenha reescrito a mensagem de um jeito diferente).
+        const tituloHandoff = sugestaoIA && /passar para o consultor/i.test(sugestaoIA.t || '');
+        if ((ehHandoff(texto) || (chave === 'ia-sugestao' && tituloHandoff)) && chatSelecionadoId) {
+          criarTicketPendente({ id: chatSelecionadoId, nome: nomeCliente, telefone: telCliente }, texto);
+        }
       } else {
         setErro('O envio falhou: ' + [j.erro, j.detalhe].filter(Boolean).join(' — '));
       }
@@ -383,6 +422,64 @@ const c = consultorAtual();
     setCarregandoChats(false);
   }
 
+  // ===== Pipeline / tickets (Respondidos) =====
+  async function carregarTickets() {
+    try {
+      const rows = await sbGet('tickets_atendimento?order=criado_em.desc');
+      setTickets(Array.isArray(rows) ? rows : []);
+    } catch {
+      // silencioso — provavelmente a tabela tickets_atendimento ainda não existe
+    }
+  }
+
+  function ticketDoChat(chatId) {
+    return tickets.find((t) => t.chat_id === chatId) || null;
+  }
+
+  // Cria o ticket pendente quando o handoff é detectado (envio ou ao abrir o
+  // chat). Idempotente: se já existe ticket pro chat, não faz nada.
+  async function criarTicketPendente(chat, textoHandoff, mensagens) {
+    const chatId = chat?.id;
+    if (!chatId || ticketDoChat(chatId)) return;
+    // demanda sugerida: o produto digitado ou a maior mensagem do cliente.
+    const msgs = Array.isArray(mensagens) ? mensagens : conversaMensagens;
+    const maiorDoCliente = msgs
+      .filter((m) => m.quem === 'Cliente' && m.texto)
+      .map((m) => m.texto)
+      .sort((a, b) => b.length - a.length)[0] || '';
+    const demanda = produto.trim() || maiorDoCliente;
+    const registro = {
+      chat_id: chatId,
+      cliente: chat.nome || nomeCliente || '',
+      telefone: chat.telefone || telCliente || '',
+      cnpj: cnpj || '',
+      razao: cnpjInfo?.empresa?.razao || '',
+      demanda,
+      consultor: extrairConsultorHandoff(textoHandoff) || (consultorAtual()?.nome || ''),
+      status: 'pendente',
+    };
+    try {
+      await sbPost('tickets_atendimento', registro, 'resolution=ignore-duplicates,return=representation');
+      await carregarTickets();
+    } catch {
+      setErro('Não consegui registrar o ticket (a tabela tickets_atendimento existe no Supabase?).');
+    }
+  }
+
+  async function aprovarTicket(chatId) {
+    setTicketBusy((s) => ({ ...s, [chatId]: 'criando' }));
+    try {
+      const demanda = demandaEdits[chatId];
+      const patch = { status: 'criado', atualizado_em: new Date().toISOString() };
+      if (demanda !== undefined) patch.demanda = demanda;
+      await sbPatch(`tickets_atendimento?chat_id=eq.${encodeURIComponent(chatId)}`, patch);
+      await carregarTickets();
+      setTicketBusy((s) => ({ ...s, [chatId]: 'criado' }));
+    } catch {
+      setTicketBusy((s) => ({ ...s, [chatId]: 'erro' }));
+    }
+  }
+
   async function selecionarChatAberto(chat) {
     setChatSelecionadoId(chat.id);
     setMobilePane('conversa');
@@ -401,7 +498,13 @@ const c = consultorAtual();
       const j = await r.json();
       if (j.ok) {
         setResetTeste(!!j.resetado);
-        setConversaMensagens(Array.isArray(j.mensagens) ? j.mensagens : []);
+        const msgs = Array.isArray(j.mensagens) ? j.mensagens : [];
+        setConversaMensagens(msgs);
+        // Se a conversa já tem o handoff, o atendimento está finalizado -> cria
+        // o ticket (cobre handoffs enviados fora do app). Idempotente.
+        if (msgs.some((m) => m.quem === 'Atendente' && ehHandoff(m.texto))) {
+          criarTicketPendente(chat, '', msgs);
+        }
         if (j.transcricao) {
           // Detecta + verifica o CNPJ da conversa antes de pedir a sugestão,
           // e passa o resultado direto pra IA (o estado ainda não atualizou aqui).
@@ -494,6 +597,29 @@ const c = consultorAtual();
 
   useEffect(() => {
     buscarChatsAbertos();
+    carregarTickets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Mantém o pipeline vivo: revê a lista de atendimentos + os tickets a cada 15s
+  // (1 req Umbler + 1 Supabase). Pausa com a aba oculta e não sobrepõe.
+  useEffect(() => {
+    let emVoo = false;
+    async function tick() {
+      if (emVoo || (typeof document !== 'undefined' && document.visibilityState === 'hidden')) return;
+      emVoo = true;
+      try {
+        const r = await fetch('/api/umbler/chats-abertos');
+        const j = await r.json();
+        if (j.ok && Array.isArray(j.chats)) setChatsAbertos(j.chats);
+        await carregarTickets();
+      } catch {
+        // silencioso — atualização de fundo
+      }
+      emVoo = false;
+    }
+    const id = setInterval(tick, 15000);
+    return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -532,6 +658,27 @@ const c = consultorAtual();
   const c = consultorAtual();
   const lista = FLUXOS[aba] || [];
 
+  // ===== Derivação do pipeline (Fila / Chats / Respondidos) =====
+  const idsFinalizados = new Set(tickets.map((t) => t.chat_id));
+  const termo = busca.trim().toLowerCase();
+  const casaBusca = (nome, tel) =>
+    !termo || (nome || '').toLowerCase().includes(termo) || (tel || '').toLowerCase().includes(termo);
+
+  const abertosVisiveis = chatsAbertos.filter(
+    (ch) => !idsFinalizados.has(ch.id) && casaBusca(ch.nome, ch.telefone)
+  );
+  // Fila: cliente mandou a última mensagem (esperando). Mais antigo no topo.
+  const filaLista = abertosVisiveis
+    .filter((ch) => ch.ultimaMensagemSource === 'Contact')
+    .sort((a, b) => new Date(a.ultimaMensagemEm || 0) - new Date(b.ultimaMensagemEm || 0));
+  // Chats: eu (ou o bot) respondi por último. Mais recente no topo.
+  const chatsLista = abertosVisiveis
+    .filter((ch) => ch.ultimaMensagemSource !== 'Contact')
+    .sort((a, b) => new Date(b.ultimaMensagemEm || 0) - new Date(a.ultimaMensagemEm || 0));
+  const respondidosLista = tickets.filter((t) => casaBusca(t.cliente, t.telefone));
+  const listaFase = faseAtiva === 'fila' ? filaLista : faseAtiva === 'chats' ? chatsLista : respondidosLista;
+  const ticketAtual = ticketDoChat(chatSelecionadoId);
+
   return (
     <div className={mobilePane === 'conversa' ? 'app pane-conversa' : 'app'}>
       {/* ===== Coluna lateral: lista de clientes ===== */}
@@ -542,24 +689,56 @@ const c = consultorAtual();
             {carregandoChats ? '…' : '↻'}
           </button>
         </div>
-        <div className="sidebar-sub">Atendimentos abertos</div>
+        <div className="sidebar-busca">
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Pesquisar por nome ou número…" />
+        </div>
+        <div className="fases">
+          <button type="button" className={faseAtiva === 'fila' ? 'fase ativa' : 'fase'} onClick={() => setFaseAtiva('fila')}>
+            Fila <span className="fase-badge">{filaLista.length}</span>
+          </button>
+          <button type="button" className={faseAtiva === 'chats' ? 'fase ativa' : 'fase'} onClick={() => setFaseAtiva('chats')}>
+            Chats <span className="fase-badge">{chatsLista.length}</span>
+          </button>
+          <button type="button" className={faseAtiva === 'respondidos' ? 'fase ativa' : 'fase'} onClick={() => setFaseAtiva('respondidos')}>
+            Respondidos <span className="fase-badge">{respondidosLista.length}</span>
+          </button>
+        </div>
         <div className="lista-chats">
           {carregandoChats && chatsAbertos.length === 0 && <div className="vazio">Carregando…</div>}
-          {!carregandoChats && chatsAbertos.length === 0 && <div className="vazio">Nenhum atendimento aberto.</div>}
-          {chatsAbertos.map((chat) => (
-            <button
-              key={chat.id}
-              type="button"
-              className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'}
-              onClick={() => selecionarChatAberto(chat)}
-            >
-              <div className="avatar">{inicial(chat.nome || chat.telefone)}</div>
-              <div className="chat-item-txt">
-                <div className="chat-nome">{chat.nome || chat.telefone || 'Sem nome'}</div>
-                <div className="chat-msg">{chat.ultimaMensagem || '(sem mensagem)'}</div>
-              </div>
-            </button>
-          ))}
+          {listaFase.length === 0 && !(carregandoChats && chatsAbertos.length === 0) && (
+            <div className="vazio">
+              {faseAtiva === 'fila' ? 'Ninguém esperando na fila.' : faseAtiva === 'chats' ? 'Nenhum chat em andamento.' : 'Nenhum ticket ainda.'}
+            </div>
+          )}
+          {faseAtiva === 'respondidos'
+            ? respondidosLista.map((t) => (
+                <button
+                  key={t.chat_id}
+                  type="button"
+                  className={t.chat_id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'}
+                  onClick={() => selecionarChatAberto({ id: t.chat_id, nome: t.cliente, telefone: t.telefone, ultimaMensagem: t.demanda })}
+                >
+                  <div className="avatar">{inicial(t.cliente || t.telefone)}</div>
+                  <div className="chat-item-txt">
+                    <div className="chat-nome">{t.cliente || t.telefone || 'Cliente'}</div>
+                    <div className="chat-msg">{t.status === 'criado' ? '✓ Ticket criado' : '• Ticket pendente'} · {t.demanda || 'sem demanda'}</div>
+                  </div>
+                </button>
+              ))
+            : listaFase.map((chat) => (
+                <button
+                  key={chat.id}
+                  type="button"
+                  className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'}
+                  onClick={() => selecionarChatAberto(chat)}
+                >
+                  <div className="avatar">{inicial(chat.nome || chat.telefone)}</div>
+                  <div className="chat-item-txt">
+                    <div className="chat-nome">{chat.nome || chat.telefone || 'Sem nome'}</div>
+                    <div className="chat-msg">{chat.ultimaMensagem || '(sem mensagem)'}</div>
+                  </div>
+                </button>
+              ))}
         </div>
       </aside>
 
@@ -586,6 +765,47 @@ const c = consultorAtual();
             </div>
 
             <div className="conversa-corpo" ref={corpoRef}>
+              {ticketAtual && (
+                <div className="ticket-card">
+                  <div className="ticket-top">
+                    <span>🎫 Ticket para o consultor</span>
+                    <span className={ticketAtual.status === 'criado' ? 'ticket-badge criado' : 'ticket-badge pend'}>
+                      {ticketAtual.status === 'criado' ? 'Ticket criado ✓' : 'Aguardando aprovação'}
+                    </span>
+                  </div>
+                  <div className="ticket-grid">
+                    <div><span>Cliente</span>{ticketAtual.cliente || '—'}</div>
+                    <div><span>Telefone</span>{ticketAtual.telefone || '—'}</div>
+                    <div><span>CNPJ</span>{ticketAtual.cnpj || '—'}</div>
+                    <div><span>Razão social</span>{ticketAtual.razao || '—'}</div>
+                    {ticketAtual.consultor ? <div><span>Consultor</span>{ticketAtual.consultor}</div> : null}
+                  </div>
+                  <label className="ticket-demanda-label">Demanda</label>
+                  <textarea
+                    className="ticket-demanda"
+                    value={demandaEdits[ticketAtual.chat_id] ?? ticketAtual.demanda ?? ''}
+                    onChange={(e) => setDemandaEdits((s) => ({ ...s, [ticketAtual.chat_id]: e.target.value }))}
+                    rows={2}
+                    disabled={ticketAtual.status === 'criado'}
+                  />
+                  {ticketAtual.status === 'criado' ? (
+                    <div className="ticket-ok">✓ Ticket criado — a criação real no sistema do vendedor entra na integração futura.</div>
+                  ) : (
+                    <button
+                      className="btn-verde ticket-btn"
+                      type="button"
+                      onClick={() => aprovarTicket(ticketAtual.chat_id)}
+                      disabled={ticketBusy[ticketAtual.chat_id] === 'criando'}
+                    >
+                      {ticketBusy[ticketAtual.chat_id] === 'criando' ? 'Criando…' : 'Solicitar aprovação / Criar ticket'}
+                    </button>
+                  )}
+                  {ticketBusy[ticketAtual.chat_id] === 'erro' && (
+                    <div className="erro">Não consegui criar o ticket — confira a tabela tickets_atendimento no Supabase.</div>
+                  )}
+                  <div className="ticket-nota">Por ora só registra a aprovação. A criação no sistema do vendedor será integrada depois.</div>
+                </div>
+              )}
               {cnpjInfo && cnpjAuto && (
                 <div className="cnpj-auto">
                   <span><strong>CNPJ detectado:</strong> {cnpj || ''} — {cnpjInfo.empresa.razao}</span>
@@ -852,6 +1072,14 @@ const c = consultorAtual();
         .chat-nome { font-weight: 700; font-size: .9rem; color: #22293a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .chat-msg { font-size: .8rem; color: #6b7385; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .vazio { font-size: .82rem; color: #97a0af; padding: 14px; text-align: center; }
+        .sidebar-busca { padding: 10px 12px 6px; }
+        .sidebar-busca input { font-size: .85rem; padding: 8px 12px; border-radius: 20px; background: #f2f5fb; }
+        .fases { display: flex; gap: 4px; padding: 4px 10px 8px; border-bottom: 1px solid #eef1f7; }
+        .fase { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; background: none; color: #6b7385; font-size: .82rem; padding: 8px 4px; border-radius: 8px; border-bottom: 2px solid transparent; }
+        .fase:hover { background: #f2f5fb; }
+        .fase.ativa { color: #1c3f94; border-bottom-color: #1c3f94; font-weight: 800; }
+        .fase-badge { background: #e1e6f0; color: #4a5568; border-radius: 20px; font-size: .68rem; font-weight: 800; padding: 1px 7px; min-width: 18px; text-align: center; }
+        .fase.ativa .fase-badge { background: #1c3f94; color: #fff; }
 
         /* ===== Conversa ===== */
         .conversa { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #e7ebf3; }
@@ -880,6 +1108,22 @@ const c = consultorAtual();
         .cnpj-auto .tag-ok { background: #e5f7ee; color: #12603a; border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .72rem; white-space: nowrap; }
         .cnpj-auto .tag-neutro { background: #fff7e0; color: #7a6216; border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .72rem; white-space: nowrap; }
         .reset-aviso { background: #fff7e0; border: 1px solid #f0d98c; border-left: 4px solid #d99a06; color: #7a6216; border-radius: 8px; padding: 9px 12px; font-size: .8rem; }
+
+        /* ===== Card de ticket (Respondidos) ===== */
+        .ticket-card { background: #fff; border: 1px solid #c6d4f2; border-radius: 12px; padding: 14px; box-shadow: 0 2px 10px rgba(28,63,148,.10); }
+        .ticket-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 800; color: #12276b; margin-bottom: 12px; }
+        .ticket-badge { font-size: .68rem; font-weight: 800; border-radius: 20px; padding: 3px 10px; white-space: nowrap; }
+        .ticket-badge.pend { background: #fff7e0; color: #7a6216; }
+        .ticket-badge.criado { background: #e5f7ee; color: #12603a; }
+        .ticket-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 14px; margin-bottom: 12px; }
+        .ticket-grid > div { font-size: .88rem; color: #22293a; }
+        .ticket-grid > div > span { display: block; font-size: .66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #8a93a6; margin-bottom: 1px; }
+        .ticket-demanda-label { display: block; font-size: .66rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: #8a93a6; margin-bottom: 4px; }
+        .ticket-demanda { width: 100%; font-family: inherit; font-size: .88rem; background: #f4f6fb; border: 1px solid #c6d4f2; border-radius: 8px; padding: 8px 10px; resize: vertical; line-height: 1.4; margin-bottom: 12px; }
+        .ticket-demanda:focus { outline: 2px solid #1c3f94; border-color: #1c3f94; }
+        .ticket-btn { width: 100%; padding: 11px; }
+        .ticket-ok { background: #e5f7ee; color: #12603a; border-radius: 8px; padding: 10px 12px; font-size: .86rem; font-weight: 600; }
+        .ticket-nota { font-size: .72rem; color: #97a0af; margin-top: 8px; }
 
         /* ===== Compositor ===== */
         .compositor { border-top: 1px solid #d5dced; background: #f7f9fc; padding: 10px 16px 14px; }

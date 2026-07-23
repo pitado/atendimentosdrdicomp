@@ -26,3 +26,19 @@ create table if not exists tickets_gerados (
 
 create index if not exists idx_tickets_gerados_chat_id on tickets_gerados(chat_id);
 create index if not exists idx_chats_sincronizados_processado on chats_sincronizados(processado);
+
+-- Pipeline de atendimento (Fila -> Chats -> Respondidos).
+-- Um atendimento vira "Respondido" quando o handoff pro consultor é detectado;
+-- aí é criado aqui um ticket (por enquanto só aprovação manual, sem integração).
+create table if not exists tickets_atendimento (
+  chat_id text primary key,          -- id do chat na Umbler
+  cliente text,
+  telefone text,
+  cnpj text,
+  razao text,                        -- razão social (da CNPJá)
+  demanda text,
+  consultor text,                    -- pra quem foi transferido (do handoff)
+  status text default 'pendente',    -- 'pendente' | 'criado'
+  criado_em timestamptz default now(),
+  atualizado_em timestamptz default now()
+);
