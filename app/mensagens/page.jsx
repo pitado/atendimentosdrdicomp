@@ -6,11 +6,21 @@ import { useState, useEffect, useRef } from 'react';
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SB_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
+const SB_CONFIGURADO = !!SB_URL && !!SB_KEY && /^https?:\/\//.test(SB_URL || '');
+function checarSbConfig() {
+  if (!SB_URL || !SB_KEY) {
+    throw new Error('Supabase não configurado — defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_ANON_KEY na Vercel e faça um redeploy.');
+  }
+  if (!/^https?:\/\//.test(SB_URL)) {
+    throw new Error('NEXT_PUBLIC_SUPABASE_URL precisa começar com https:// (ex.: https://xxxx.supabase.co). Ajuste na Vercel e faça um redeploy.');
+  }
+}
 async function sbGet(path) {
+  checarSbConfig();
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
     headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
   });
-  if (!r.ok) throw new Error('Supabase GET falhou');
+  if (!r.ok) throw await sbErro(r, 'GET');
   return r.json();
 }
 async function sbErro(r, metodo) {
@@ -25,6 +35,7 @@ async function sbErro(r, metodo) {
   return new Error(`Supabase ${metodo} ${r.status}${dica}${detalhe ? ' · ' + detalhe.slice(0, 160) : ''}`);
 }
 async function sbPost(path, body, prefer = 'return=representation') {
+  checarSbConfig();
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
     method: 'POST',
     headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', Prefer: prefer },
@@ -34,6 +45,7 @@ async function sbPost(path, body, prefer = 'return=representation') {
   return r.json();
 }
 async function sbPatch(path, body) {
+  checarSbConfig();
   const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
     method: 'PATCH',
     headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, 'Content-Type': 'application/json', Prefer: 'return=representation' },
@@ -701,6 +713,9 @@ const c = consultorAtual();
             {carregandoChats ? '…' : '↻'}
           </button>
         </div>
+        {!SB_CONFIGURADO && (
+          <div className="sb-aviso">⚠ Supabase não configurado — Fila/consultor/tickets não vão salvar. Defina <b>NEXT_PUBLIC_SUPABASE_URL</b> e <b>NEXT_PUBLIC_SUPABASE_ANON_KEY</b> (com https://) na Vercel e faça um redeploy.</div>
+        )}
         <div className="sidebar-busca">
           <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Pesquisar por nome ou número…" />
         </div>
@@ -1084,6 +1099,7 @@ const c = consultorAtual();
         .chat-nome { font-weight: 700; font-size: .9rem; color: #22293a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .chat-msg { font-size: .8rem; color: #6b7385; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .vazio { font-size: .82rem; color: #97a0af; padding: 14px; text-align: center; }
+        .sb-aviso { margin: 8px 10px 0; background: #fdeaea; border: 1px solid #f3b6b6; border-radius: 8px; padding: 8px 10px; font-size: .74rem; color: #97231f; line-height: 1.4; }
         .sidebar-busca { padding: 10px 12px 6px; }
         .sidebar-busca input { font-size: .85rem; padding: 8px 12px; border-radius: 20px; background: #f2f5fb; }
         .fases { display: flex; gap: 4px; padding: 4px 10px 8px; border-bottom: 1px solid #eef1f7; }
