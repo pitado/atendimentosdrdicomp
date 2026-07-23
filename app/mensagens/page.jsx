@@ -281,6 +281,7 @@ export default function Mensagens() {
   const [tickets, setTickets] = useState([]); // Respondidos (Supabase)
   const [demandaEdits, setDemandaEdits] = useState({}); // edição de demanda por chat_id
   const [ticketBusy, setTicketBusy] = useState({}); // status de ação por chat_id
+  const [ticketFoco, setTicketFoco] = useState(null); // ticket destacado no board
   const corpoRef = useRef(null); // pra rolar a conversa pro fim
 
   function consultorAtual() {
@@ -524,12 +525,17 @@ const c = consultorAtual();
         setResetTeste(!!j.resetado);
         const msgs = Array.isArray(j.mensagens) ? j.mensagens : [];
         setConversaMensagens(msgs);
-        // Se a conversa já tem o handoff, o atendimento está finalizado -> cria
-        // o ticket (cobre handoffs enviados fora do app). Idempotente.
-        if (msgs.some((m) => m.quem === 'Atendente' && ehHandoff(m.texto))) {
-          criarTicketPendente(chat, '', msgs);
-        }
-        if (j.transcricao) {
+        // Finalizado = já tem ticket OU a conversa contém o handoff. Nesse caso
+        // NÃO chamamos a IA (economiza OpenAI) — só mostramos a conversa.
+        const temHandoff = msgs.some((m) => m.quem === 'Atendente' && ehHandoff(m.texto));
+        const finalizado = !!ticketDoChat(chat.id) || temHandoff;
+        if (temHandoff) criarTicketPendente(chat, '', msgs); // idempotente
+        if (finalizado) {
+          setConversaUsadaIA('');
+          setRaciocinioIA('');
+          setSugestaoIA(null);
+          setMensagemEditavel('');
+        } else if (j.transcricao) {
           // Detecta + verifica o CNPJ da conversa antes de pedir a sugestão,
           // e passa o resultado direto pra IA (o estado ainda não atualizou aqui).
           const infoCnpj = await detectarEVerificarCnpj(j.transcricao);
@@ -703,6 +709,55 @@ const c = consultorAtual();
   const listaFase = faseAtiva === 'fila' ? filaLista : faseAtiva === 'chats' ? chatsLista : respondidosLista;
   const ticketAtual = ticketDoChat(chatSelecionadoId);
 
+  function focarTicket(chatId) {
+    setTicketFoco(chatId);
+    setMobilePane('conversa'); // no mobile, revela o board
+    if (typeof document !== 'undefined') {
+      setTimeout(() => {
+        const el = document.getElementById('ticket-' + chatId);
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 60);
+    }
+  }
+
+  function cardTicket(t) {
+    const busy = ticketBusy[t.chat_id];
+    return (
+      <div id={'ticket-' + t.chat_id} key={t.chat_id} className={t.chat_id === ticketFoco ? 'ticket-card destaque' : 'ticket-card'}>
+        <div className="ticket-top">
+          <span>🎫 Ticket para o consultor</span>
+          <span className={t.status === 'criado' ? 'ticket-badge criado' : 'ticket-badge pend'}>
+            {t.status === 'criado' ? 'Ticket criado ✓' : 'Aguardando aprovação'}
+          </span>
+        </div>
+        <div className="ticket-grid">
+          <div><span>Cliente</span>{t.cliente || '—'}</div>
+          <div><span>Telefone</span>{t.telefone || '—'}</div>
+          <div><span>CNPJ</span>{t.cnpj || '—'}</div>
+          <div><span>Razão social</span>{t.razao || '—'}</div>
+          {t.consultor ? <div><span>Consultor</span>{t.consultor}</div> : null}
+        </div>
+        <label className="ticket-demanda-label">Demanda</label>
+        <textarea
+          className="ticket-demanda"
+          value={demandaEdits[t.chat_id] ?? t.demanda ?? ''}
+          onChange={(e) => setDemandaEdits((s) => ({ ...s, [t.chat_id]: e.target.value }))}
+          rows={2}
+          disabled={t.status === 'criado'}
+        />
+        {t.status === 'criado' ? (
+          <div className="ticket-ok">✓ Ticket criado — a criação real no sistema do vendedor entra na integração futura.</div>
+        ) : (
+          <button className="btn-verde ticket-btn" type="button" onClick={() => aprovarTicket(t.chat_id)} disabled={busy === 'criando'}>
+            {busy === 'criando' ? 'Criando…' : 'Solicitar aprovação / Criar ticket'}
+          </button>
+        )}
+        {busy === 'erro' && <div className="erro">Não consegui criar o ticket — confira a tabela no Supabase.</div>}
+        <div className="ticket-nota">Por ora só registra a aprovação. A criação no sistema do vendedor será integrada depois.</div>
+      </div>
+    );
+  }
+
   return (
     <div className={mobilePane === 'conversa' ? 'app pane-conversa' : 'app'}>
       {/* ===== Coluna lateral: lista de clientes ===== */}
@@ -742,8 +797,8 @@ const c = consultorAtual();
                 <button
                   key={t.chat_id}
                   type="button"
-                  className={t.chat_id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'}
-                  onClick={() => selecionarChatAberto({ id: t.chat_id, nome: t.cliente, telefone: t.telefone, ultimaMensagem: t.demanda })}
+                  className={t.chat_id === ticketFoco ? 'chat-item selecionado' : 'chat-item'}
+                  onClick={() => focarTicket(t.chat_id)}
                 >
                   <div className="avatar">{inicial(t.cliente || t.telefone)}</div>
                   <div className="chat-item-txt">
@@ -769,9 +824,18 @@ const c = consultorAtual();
         </div>
       </aside>
 
-      {/* ===== Conversa ===== */}
+      {/* ===== Conversa / Board de tickets ===== */}
       <main className="conversa">
-        {!chatSelecionadoId ? (
+        {faseAtiva === 'respondidos' ? (
+          <div className="tickets-board">
+            <div className="board-titulo">🎫 Tickets — Respondidos <span className="board-count">{respondidosLista.length}</span></div>
+            {respondidosLista.length === 0 ? (
+              <div className="conversa-vazia">Nenhum ticket ainda. Quando um atendimento for transferido pro consultor, o ticket aparece aqui.</div>
+            ) : (
+              <div className="board-grid">{respondidosLista.map((t) => cardTicket(t))}</div>
+            )}
+          </div>
+        ) : !chatSelecionadoId ? (
           <div className="placeholder">
             <div className="placeholder-ico">💬</div>
             <p>Selecione um atendimento na coluna ao lado para começar.</p>
@@ -792,47 +856,7 @@ const c = consultorAtual();
             </div>
 
             <div className="conversa-corpo" ref={corpoRef}>
-              {ticketAtual && (
-                <div className="ticket-card">
-                  <div className="ticket-top">
-                    <span>🎫 Ticket para o consultor</span>
-                    <span className={ticketAtual.status === 'criado' ? 'ticket-badge criado' : 'ticket-badge pend'}>
-                      {ticketAtual.status === 'criado' ? 'Ticket criado ✓' : 'Aguardando aprovação'}
-                    </span>
-                  </div>
-                  <div className="ticket-grid">
-                    <div><span>Cliente</span>{ticketAtual.cliente || '—'}</div>
-                    <div><span>Telefone</span>{ticketAtual.telefone || '—'}</div>
-                    <div><span>CNPJ</span>{ticketAtual.cnpj || '—'}</div>
-                    <div><span>Razão social</span>{ticketAtual.razao || '—'}</div>
-                    {ticketAtual.consultor ? <div><span>Consultor</span>{ticketAtual.consultor}</div> : null}
-                  </div>
-                  <label className="ticket-demanda-label">Demanda</label>
-                  <textarea
-                    className="ticket-demanda"
-                    value={demandaEdits[ticketAtual.chat_id] ?? ticketAtual.demanda ?? ''}
-                    onChange={(e) => setDemandaEdits((s) => ({ ...s, [ticketAtual.chat_id]: e.target.value }))}
-                    rows={2}
-                    disabled={ticketAtual.status === 'criado'}
-                  />
-                  {ticketAtual.status === 'criado' ? (
-                    <div className="ticket-ok">✓ Ticket criado — a criação real no sistema do vendedor entra na integração futura.</div>
-                  ) : (
-                    <button
-                      className="btn-verde ticket-btn"
-                      type="button"
-                      onClick={() => aprovarTicket(ticketAtual.chat_id)}
-                      disabled={ticketBusy[ticketAtual.chat_id] === 'criando'}
-                    >
-                      {ticketBusy[ticketAtual.chat_id] === 'criando' ? 'Criando…' : 'Solicitar aprovação / Criar ticket'}
-                    </button>
-                  )}
-                  {ticketBusy[ticketAtual.chat_id] === 'erro' && (
-                    <div className="erro">Não consegui criar o ticket — confira a tabela tickets_atendimento no Supabase.</div>
-                  )}
-                  <div className="ticket-nota">Por ora só registra a aprovação. A criação no sistema do vendedor será integrada depois.</div>
-                </div>
-              )}
+              {ticketAtual && cardTicket(ticketAtual)}
               {cnpjInfo && cnpjAuto && (
                 <div className="cnpj-auto">
                   <span><strong>CNPJ detectado:</strong> {cnpj || ''} — {cnpjInfo.empresa.razao}</span>
@@ -1152,6 +1176,11 @@ const c = consultorAtual();
         .ticket-btn { width: 100%; padding: 11px; }
         .ticket-ok { background: #e5f7ee; color: #12603a; border-radius: 8px; padding: 10px 12px; font-size: .86rem; font-weight: 600; }
         .ticket-nota { font-size: .72rem; color: #97a0af; margin-top: 8px; }
+        .ticket-card.destaque { outline: 2px solid #1c3f94; outline-offset: 1px; }
+        .tickets-board { flex: 1; overflow-y: auto; padding: 16px; }
+        .board-titulo { display: flex; align-items: center; gap: 8px; font-weight: 800; color: #12276b; font-size: 1rem; margin-bottom: 14px; }
+        .board-count { background: #1c3f94; color: #fff; border-radius: 20px; font-size: .72rem; font-weight: 800; padding: 1px 9px; }
+        .board-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px; align-items: start; }
 
         /* ===== Compositor ===== */
         .compositor { border-top: 1px solid #d5dced; background: #f7f9fc; padding: 10px 16px 14px; }
