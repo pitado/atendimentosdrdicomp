@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 
 // ====== Supabase (mesmo projeto/tabelas da extensão Assistente SDR) ======
 const SB_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -226,6 +226,32 @@ function inicial(txt) {
   return s ? s[0].toUpperCase() : '?';
 }
 
+// ===== Data/hora das mensagens (o `em` vem em UTC; exibimos no fuso local) =====
+function formatarHora(em) {
+  if (!em) return '';
+  const d = new Date(em);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+}
+function chaveDia(em) {
+  if (!em) return '';
+  const d = new Date(em);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString('pt-BR');
+}
+function rotuloDia(em) {
+  if (!em) return '';
+  const d = new Date(em);
+  if (Number.isNaN(d.getTime())) return '';
+  const hoje = new Date();
+  const ontem = new Date();
+  ontem.setDate(hoje.getDate() - 1);
+  const dk = d.toLocaleDateString('pt-BR');
+  if (dk === hoje.toLocaleDateString('pt-BR')) return 'Hoje';
+  if (dk === ontem.toLocaleDateString('pt-BR')) return 'Ontem';
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
 function normalizar(s) {
   return (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 }
@@ -352,7 +378,7 @@ export default function Mensagens() {
       setStatusEnvio((s) => ({ ...s, [chave]: j.ok ? 'ok' : 'erro' }));
       if (j.ok) {
         // Mostra na conversa que a mensagem saiu (o refresh confirma depois).
-        setConversaMensagens((ms) => [...ms, { quem: 'Atendente', texto }]);
+        setConversaMensagens((ms) => [...ms, { quem: 'Atendente', texto, em: new Date().toISOString() }]);
         // Se foi o handoff pro consultor, finaliza o atendimento -> Respondidos.
         // Detecta pelo trecho estável do texto OU pelo template que a IA escolheu
         // (caso a IA tenha reescrito a mensagem de um jeito diferente).
@@ -876,12 +902,22 @@ const c = consultorAtual();
                 </div>
               )}
               {conversaMensagens.length === 0 && <div className="conversa-vazia">Sem mensagens ainda.</div>}
-              {conversaMensagens.map((m, i) => (
-                <div key={i} className={'bolha ' + (m.quem === 'Cliente' ? 'entrada' : m.quem === 'Bot' ? 'bot' : 'saida')}>
-                  <span className="bolha-quem">{m.quem}</span>
-                  <div className="bolha-txt">{m.texto}</div>
-                </div>
-              ))}
+              {conversaMensagens.map((m, i) => {
+                const anterior = conversaMensagens[i - 1];
+                const mostrarData = m.em && (!anterior || chaveDia(anterior.em) !== chaveDia(m.em));
+                return (
+                  <Fragment key={i}>
+                    {mostrarData && (
+                      <div className="dia-sep"><span>{rotuloDia(m.em)}</span></div>
+                    )}
+                    <div className={'bolha ' + (m.quem === 'Cliente' ? 'entrada' : m.quem === 'Bot' ? 'bot' : 'saida')}>
+                      <span className="bolha-quem">{m.quem}</span>
+                      <div className="bolha-txt">{m.texto}</div>
+                      {m.em && <span className="bolha-hora">{formatarHora(m.em)}</span>}
+                    </div>
+                  </Fragment>
+                );
+              })}
             </div>
 
             <div className="compositor">
@@ -1159,6 +1195,11 @@ const c = consultorAtual();
         .bolha.saida { align-self: flex-end; background: #dcf8c6; color: #103a24; border-top-right-radius: 3px; }
         .bolha.saida .bolha-quem { color: #1e7a45; }
         .bolha.bot { align-self: center; background: #eceff5; color: #6b7385; font-size: .82rem; max-width: 88%; text-align: center; box-shadow: none; }
+        .bolha-hora { display: block; text-align: right; font-size: .64rem; color: #9aa3b2; margin-top: 2px; }
+        .bolha.saida .bolha-hora { color: #5f9673; }
+        .bolha.bot .bolha-hora { text-align: center; }
+        .dia-sep { align-self: center; margin: 6px 0 2px; }
+        .dia-sep span { background: #d6dce8; color: #4a5568; font-size: .7rem; font-weight: 700; border-radius: 20px; padding: 3px 12px; }
 
         /* ===== Banners ===== */
         .cnpj-auto { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #eaf0fc; border: 1px solid #c6d4f2; border-left: 4px solid #1c3f94; border-radius: 8px; padding: 9px 12px; font-size: .8rem; color: #1c3f94; }
