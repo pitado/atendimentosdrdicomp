@@ -308,6 +308,7 @@ export default function Mensagens() {
   const [demandaEdits, setDemandaEdits] = useState({}); // edição de demanda por chat_id
   const [ticketBusy, setTicketBusy] = useState({}); // status de ação por chat_id
   const [ticketFoco, setTicketFoco] = useState(null); // ticket destacado no board
+  const [assinatura, setAssinatura] = useState(''); // nome do atendente que o cliente vê
   const corpoRef = useRef(null); // pra rolar a conversa pro fim
 
   function consultorAtual() {
@@ -365,20 +366,21 @@ export default function Mensagens() {
   }
 
   async function enviar(chave, texto) {
-    if (!telCliente.trim()) { setErro('Preenche o telefone do cliente antes de enviar.'); return; }
+    if (!telCliente.trim() && !chatSelecionadoId) { setErro('Selecione um atendimento (ou preencha o telefone) antes de enviar.'); return; }
+    const assina = assinatura.trim();
     setErro('');
     setStatusEnvio((s) => ({ ...s, [chave]: 'enviando' }));
     try {
       const r = await fetch('/api/umbler/enviar', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ telefone: telCliente, mensagem: texto }),
+        body: JSON.stringify({ telefone: telCliente, mensagem: texto, chatId: chatSelecionadoId || undefined, assinatura: assina || undefined }),
       });
       const j = await r.json();
       setStatusEnvio((s) => ({ ...s, [chave]: j.ok ? 'ok' : 'erro' }));
       if (j.ok) {
         // Mostra na conversa que a mensagem saiu (o refresh confirma depois).
-        setConversaMensagens((ms) => [...ms, { quem: 'Atendente', texto, em: new Date().toISOString() }]);
+        setConversaMensagens((ms) => [...ms, { quem: 'Atendente', texto, em: new Date().toISOString(), assinatura: assina || undefined }]);
         // Se foi o handoff pro consultor, finaliza o atendimento -> Respondidos.
         // Detecta pelo trecho estável do texto OU pelo template que a IA escolheu
         // (caso a IA tenha reescrito a mensagem de um jeito diferente).
@@ -659,8 +661,17 @@ const c = consultorAtual();
   useEffect(() => {
     buscarChatsAbertos();
     carregarTickets();
+    try {
+      const a = localStorage.getItem('sdr_assinatura');
+      if (a) setAssinatura(a);
+    } catch { /* localStorage indisponível */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function atualizarAssinatura(v) {
+    setAssinatura(v);
+    try { localStorage.setItem('sdr_assinatura', v); } catch { /* ignore */ }
+  }
 
   // Mantém o pipeline vivo: revê a lista de atendimentos + os tickets a cada 15s
   // (1 req Umbler + 1 Supabase). Pausa com a aba oculta e não sobrepõe.
@@ -946,6 +957,11 @@ const c = consultorAtual();
                   </button>
                 </div>
               )}
+              <div className="assina-nota">
+                {assinatura.trim()
+                  ? <>Assinando como <b>{assinatura.trim()}</b> — o cliente vê esse nome.</>
+                  : <>Sem assinatura — configure seu nome em 🛠 Ferramentas pra o cliente ver quem está atendendo.</>}
+              </div>
               <div className="compositor-linha">
                 <textarea
                   className="composer-input"
@@ -979,6 +995,10 @@ const c = consultorAtual();
             </div>
             <div className="drawer-corpo">
         <div className="config">
+          <div className="campo" style={{ flexBasis: '100%' }}>
+            <label>Sua assinatura (nome que o cliente vê nas mensagens)</label>
+            <input value={assinatura} onChange={(e) => atualizarAssinatura(e.target.value)} placeholder="Ex: Miguel Pita" />
+          </div>
           <div className="campo">
             <label>Nome do cliente</label>
             <input value={nomeCliente} onChange={(e) => setNomeCliente(e.target.value)} placeholder="Ex: Brenda" />
@@ -1247,6 +1267,8 @@ const c = consultorAtual();
         .seg-btn.ativo { background: #1c3f94; color: #fff; }
         .btn-gerar-mini { margin-left: auto; background: #eaf0fc; color: #1c3f94; font-size: .78rem; padding: 6px 11px; }
         .btn-gerar-mini:hover:not(:disabled) { background: #dbe6fb; }
+        .assina-nota { font-size: .72rem; color: #6b7385; margin-bottom: 6px; }
+        .assina-nota b { color: #1c3f94; }
         .compositor-linha { display: flex; gap: 8px; align-items: flex-end; }
         .composer-input { flex: 1; white-space: pre-wrap; font-family: inherit; font-size: .92rem; background: #fff; border: 1px solid #c6d4f2; border-radius: 12px; padding: 10px 12px; resize: none; line-height: 1.4; max-height: 220px; }
         .composer-input:focus { outline: 2px solid #1c3f94; border-color: #1c3f94; }

@@ -200,3 +200,23 @@ export async function sendMessageSimplified(params: {
     }),
   });
 }
+
+// POST /v1/messages/ — envio pra um chat já existente/aberto. Diferente do
+// simplified, aceita `prefix`: o nome do atendente que o CLIENTE vê acima da
+// mensagem (a "assinatura"). Precisa do chatId (o chat tem que estar aberto).
+export async function sendMessage(params: {
+  chatId: string;
+  message: string;
+  prefix?: string;
+}) {
+  const organizationId = requireOrganizationId();
+  return umblerFetch<UmblerSendResult>("/v1/messages/", {
+    method: "POST",
+    body: JSON.stringify({
+      ChatId: params.chatId,
+      Message: params.message,
+      OrganizationId: organizationId,
+      ...(params.prefix ? { Prefix: params.prefix } : {}),
+    }),
+  });
+}
