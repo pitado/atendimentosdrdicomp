@@ -54,6 +54,14 @@ async function sbPatch(path, body) {
   if (!r.ok) throw await sbErro(r, 'PATCH');
   return r.json();
 }
+async function sbDelete(path) {
+  checarSbConfig();
+  const r = await fetch(`${SB_URL}/rest/v1/${path}`, {
+    method: 'DELETE',
+    headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` },
+  });
+  if (!r.ok) throw await sbErro(r, 'DELETE');
+}
 async function obterProximoVendedor(ramo) {
   const encoded = encodeURIComponent(ramo);
   const disponiveis = await sbGet(`sdr_vendedores?setor=eq.${encoded}&ferias=eq.false&na_fila=eq.true&order=nome.asc`);
@@ -537,6 +545,22 @@ const c = consultorAtual();
     }
   }
 
+  // Remove o ticket -> o atendimento sai de Respondidos e volta pra Fila/Chats
+  // (útil pra recomeçar/testar o mesmo número). O ticket só é recriado quando
+  // você enviar o handoff de novo.
+  async function excluirTicket(chatId) {
+    setTicketBusy((s) => ({ ...s, [chatId]: 'excluindo' }));
+    try {
+      await sbDelete(`tickets_atendimento?chat_id=eq.${encodeURIComponent(chatId)}`);
+      setTickets((ts) => ts.filter((t) => t.chat_id !== chatId));
+      if (ticketFoco === chatId) setTicketFoco(null);
+      setTicketBusy((s) => { const n = { ...s }; delete n[chatId]; return n; });
+    } catch (e) {
+      setTicketBusy((s) => ({ ...s, [chatId]: 'erro' }));
+      setErro('Não consegui reabrir o atendimento. ' + (e?.message || ''));
+    }
+  }
+
   async function selecionarChatAberto(chat) {
     setChatSelecionadoId(chat.id);
     setMobilePane('conversa');
@@ -557,16 +581,14 @@ const c = consultorAtual();
         setResetTeste(!!j.resetado);
         const msgs = Array.isArray(j.mensagens) ? j.mensagens : [];
         setConversaMensagens(msgs);
-        // A IA NÃO gera nada automaticamente — só quando você clicar em "Gerar".
-        // Aqui só detectamos o CNPJ (grátis) pro contexto/ticket.
+        // A IA só gera quando você clica em "Gerar". Aqui só detectamos o CNPJ
+        // (grátis) pro contexto. O ticket é criado SÓ ao ENVIAR o handoff — não
+        // recria ao abrir, pra você poder reabrir/recomeçar o atendimento.
         setConversaUsadaIA('');
         setRaciocinioIA('');
         setSugestaoIA(null);
         setMensagemEditavel('');
-        const temHandoff = msgs.some((m) => m.quem === 'Atendente' && ehHandoff(m.texto));
-        const finalizado = !!ticketDoChat(chat.id) || temHandoff;
-        const infoCnpj = j.transcricao ? await detectarEVerificarCnpj(j.transcricao) : null;
-        if (finalizado && temHandoff) criarTicketPendente(chat, '', msgs, infoCnpj);
+        if (j.transcricao) detectarEVerificarCnpj(j.transcricao);
       } else if (chat.ultimaMensagem) {
         // não conseguiu o histórico — mostra ao menos a última mensagem
         setConversaMensagens([{ quem: 'Cliente', texto: chat.ultimaMensagem }]);
@@ -795,7 +817,12 @@ const c = consultorAtual();
           </button>
         )}
         {busy === 'erro' && <div className="erro">Não consegui criar o ticket — confira a tabela no Supabase.</div>}
-        <div className="ticket-nota">Por ora só registra a aprovação. A criação no sistema do vendedor será integrada depois.</div>
+        <div className="ticket-rodape">
+          <span className="ticket-nota">Por ora só registra a aprovação. A criação no sistema do vendedor será integrada depois.</span>
+          <button className="ticket-reabrir" type="button" onClick={() => excluirTicket(t.chat_id)} disabled={busy === 'excluindo'}>
+            {busy === 'excluindo' ? 'Reabrindo…' : '↩ Reabrir atendimento'}
+          </button>
+        </div>
       </div>
     );
   }
@@ -1243,7 +1270,10 @@ const c = consultorAtual();
         .ticket-demanda:focus { outline: 2px solid #1c3f94; border-color: #1c3f94; }
         .ticket-btn { width: 100%; padding: 11px; }
         .ticket-ok { background: #e5f7ee; color: #12603a; border-radius: 8px; padding: 10px 12px; font-size: .86rem; font-weight: 600; }
-        .ticket-nota { font-size: .72rem; color: #97a0af; margin-top: 8px; }
+        .ticket-nota { font-size: .72rem; color: #97a0af; }
+        .ticket-rodape { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+        .ticket-reabrir { background: none; color: #c02b2b; font-size: .74rem; font-weight: 700; padding: 4px 6px; white-space: nowrap; }
+        .ticket-reabrir:hover:not(:disabled) { text-decoration: underline; }
         .ticket-card.destaque { outline: 2px solid #1c3f94; outline-offset: 1px; }
         .tickets-board { flex: 1; overflow-y: auto; padding: 16px; }
         .board-titulo { display: flex; align-items: center; gap: 8px; font-weight: 800; color: #12276b; font-size: 1rem; margin-bottom: 14px; }
