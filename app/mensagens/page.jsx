@@ -169,6 +169,25 @@ function detectarGenero(nomeCompleto) {
   return primeiro.endsWith('a') ? 'F' : 'M';
 }
 
+// Acha um CNPJ (14 dígitos, formatado ou não) num texto. Fica com o ÚLTIMO
+// mencionado — se o cliente corrigiu, o mais recente é o que vale.
+function extrairCnpj(texto) {
+  if (!texto) return '';
+  const matches = texto.match(/\d{2}\.?\d{3}\.?\d{3}\/?\d{4}-?\d{2}/g) || [];
+  let achado = '';
+  for (const m of matches) {
+    const d = m.replace(/\D/g, '');
+    if (d.length === 14) achado = d;
+  }
+  return achado;
+}
+
+function formatarCnpj(d) {
+  const s = (d || '').replace(/\D/g, '').slice(0, 14);
+  if (s.length !== 14) return s;
+  return `${s.slice(0, 2)}.${s.slice(2, 5)}.${s.slice(5, 8)}/${s.slice(8, 12)}-${s.slice(12, 14)}`;
+}
+
 export default function Mensagens() {
   const [aba, setAba] = useState('triagem');
   const [nomeCliente, setNomeCliente] = useState('');
@@ -186,6 +205,7 @@ export default function Mensagens() {
   const [cnpj, setCnpj] = useState('');
   const [cnpjInfo, setCnpjInfo] = useState(null);
   const [buscandoCnpj, setBuscandoCnpj] = useState(false);
+  const [cnpjAuto, setCnpjAuto] = useState(false); // CNPJ veio da conversa (auto)
   const [chatsAbertos, setChatsAbertos] = useState([]);
   const [carregandoChats, setCarregandoChats] = useState(false);
   const [chatSelecionadoId, setChatSelecionadoId] = useState(null);
@@ -297,6 +317,7 @@ const c = consultorAtual();
   async function consultarCnpj() {
     setErro('');
     setCnpjInfo(null);
+    setCnpjAuto(false);
     const d = cnpj.replace(/\D/g, '');
     if (d.length !== 14) { setErro('CNPJ precisa ter 14 números.'); return; }
     setBuscandoCnpj(true);
@@ -309,6 +330,26 @@ const c = consultorAtual();
       setErro('Erro na consulta do CNPJ.');
     }
     setBuscandoCnpj(false);
+  }
+
+  // Detecta um CNPJ na conversa e já consulta a CNPJá, pra alimentar o contexto
+  // da IA sem o atendente precisar digitar. Retorna o resultado (ou null).
+  async function detectarEVerificarCnpj(texto) {
+    const d = extrairCnpj(texto);
+    if (!d) return null;
+    setCnpj(formatarCnpj(d));
+    try {
+      const r = await fetch('/api/cnpj?cnpj=' + d);
+      const info = await r.json();
+      if (info.ok) {
+        setCnpjInfo(info);
+        setCnpjAuto(true);
+        return info;
+      }
+    } catch {
+      // silencioso — o CNPJ é um extra; se falhar, o atendimento segue sem ele
+    }
+    return null;
   }
 
   async function buscarChatsAbertos() {
@@ -335,6 +376,8 @@ const c = consultorAtual();
     setSugestaoIA(null);
     setErroIA('');
     setResetTeste(false);
+    setCnpjInfo(null);
+    setCnpjAuto(false);
 
     try {
       const r = await fetch('/api/umbler/chat-historico?id=' + encodeURIComponent(chat.id));
@@ -342,7 +385,10 @@ const c = consultorAtual();
       if (j.ok) {
         setResetTeste(!!j.resetado);
         if (j.transcricao) {
-          sugerirRespostaIA(j.transcricao);
+          // Detecta + verifica o CNPJ da conversa antes de pedir a sugestão,
+          // e passa o resultado direto pra IA (o estado ainda não atualizou aqui).
+          const infoCnpj = await detectarEVerificarCnpj(j.transcricao);
+          sugerirRespostaIA(j.transcricao, infoCnpj);
         } else {
           // Conversa vazia (ex.: reset de teste com "oitchencha"): trata como
           // cliente novo — limpa a sugestão e espera a próxima mensagem.
@@ -359,7 +405,7 @@ const c = consultorAtual();
     }
   }
 
-  async function sugerirRespostaIA(mensagemCliente) {
+  async function sugerirRespostaIA(mensagemCliente, cnpjInfoArg) {
     setErroIA('');
     setSugestaoIA(null);
     setRaciocinioIA('');
@@ -379,6 +425,9 @@ const c = consultorAtual();
 
       // Contexto do atendimento — o que o painel já sabe, pra IA personalizar.
       const cons = consultorAtual();
+      // Usa o CNPJ passado (detecção automática) ou, se não veio argumento, o do
+      // estado (consulta manual na aba Direct / "Gerar de novo").
+      const cnpjUsar = cnpjInfoArg === undefined ? cnpjInfo : cnpjInfoArg;
       const contexto = {
         nomeCliente: nomeCliente.trim() || null,
         produto: produto.trim() || null,
@@ -386,8 +435,8 @@ const c = consultorAtual();
         consultor: cons && cons.nome
           ? { nome: cons.nome, telefone: cons.telefone || null, titulo: cons.genero === 'F' ? 'consultora' : 'consultor' }
           : null,
-        cnpj: cnpjInfo
-          ? { razao: cnpjInfo.empresa.razao, situacao: cnpjInfo.empresa.situacao, elegivelDirect: cnpjInfo.elegivel }
+        cnpj: cnpjUsar
+          ? { razao: cnpjUsar.empresa.razao, situacao: cnpjUsar.empresa.situacao, elegivelDirect: cnpjUsar.elegivel }
           : null,
         cadastroStatus,
       };
@@ -465,6 +514,15 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
             )}
           </div>
         </div>
+
+        {cnpjInfo && cnpjAuto && (
+          <div className="cnpj-auto">
+            <span><strong>CNPJ detectado na conversa:</strong> {cnpj || ''} — {cnpjInfo.empresa.razao}</span>
+            <span className={cnpjInfo.elegivel ? 'tag-ok' : 'tag-neutro'}>
+              {cnpjInfo.elegivel ? 'elegível pro Direct' : 'sem CNAE elegível'}
+            </span>
+          </div>
+        )}
 
         {resetTeste && (
           <div className="reset-aviso">
@@ -746,6 +804,9 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
         .chat-nome { font-weight: 700; font-size: .85rem; color: #22293a; }
         .chat-msg { font-size: .78rem; color: #6b7385; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .ia-status { text-align: center; font-size: .85rem; color: #1c3f94; margin-bottom: 12px; }
+        .cnpj-auto { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; background: #eaf0fc; border: 1px solid #c6d4f2; border-left: 4px solid #1c3f94; border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; font-size: .82rem; color: #1c3f94; }
+        .cnpj-auto .tag-ok { background: #e5f7ee; color: #12603a; border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .74rem; white-space: nowrap; }
+        .cnpj-auto .tag-neutro { background: #fff7e0; color: #7a6216; border-radius: 20px; padding: 2px 10px; font-weight: 700; font-size: .74rem; white-space: nowrap; }
         .reset-aviso { background: #fff7e0; border: 1px solid #f0d98c; border-left: 4px solid #d99a06; color: #7a6216; border-radius: 8px; padding: 9px 12px; margin-bottom: 12px; font-size: .82rem; }
         .ia-controles { background: #fff; border: 1px solid #c6d4f2; border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
         .ia-controles-linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
