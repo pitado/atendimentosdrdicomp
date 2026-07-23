@@ -66,6 +66,8 @@ export async function GET(req) {
         quem: m.source === 'Contact' ? 'Cliente' : m.source === 'Bot' ? 'Bot' : 'Atendente',
         texto: m.content,
         em: m.eventAtUTC || null,
+        // Assinatura do atendente (nome de quem enviou), quando houver.
+        assinatura: m.prefix || '',
       }));
 
     const transcricao = estruturadas.map((m) => `${m.quem}: ${m.texto}`).join('\n');

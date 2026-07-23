@@ -911,7 +911,7 @@ const c = consultorAtual();
                       <div className="dia-sep"><span>{rotuloDia(m.em)}</span></div>
                     )}
                     <div className={'bolha ' + (m.quem === 'Cliente' ? 'entrada' : m.quem === 'Bot' ? 'bot' : 'saida')}>
-                      <span className="bolha-quem">{m.quem}</span>
+                      <span className={m.assinatura ? 'bolha-quem assinatura' : 'bolha-quem'}>{m.assinatura || m.quem}</span>
                       <div className="bolha-txt">{m.texto}</div>
                       {m.em && <span className="bolha-hora">{formatarHora(m.em)}</span>}
                     </div>
@@ -1190,6 +1190,8 @@ const c = consultorAtual();
         .conversa-vazia { text-align: center; color: #8a93a6; font-size: .85rem; margin: auto; }
         .bolha { max-width: 74%; padding: 7px 11px; border-radius: 12px; font-size: .9rem; line-height: 1.4; box-shadow: 0 1px 1px rgba(0,0,0,.06); }
         .bolha-quem { display: block; font-size: .68rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; opacity: .6; margin-bottom: 2px; }
+        .bolha-quem.assinatura { text-transform: none; font-size: .74rem; letter-spacing: 0; opacity: .85; color: #1c3f94; }
+        .bolha.saida .bolha-quem.assinatura { color: #1e7a45; }
         .bolha-txt { white-space: pre-wrap; word-break: break-word; }
         .bolha.entrada { align-self: flex-start; background: #fff; color: #22293a; border-top-left-radius: 3px; }
         .bolha.saida { align-self: flex-end; background: #dcf8c6; color: #103a24; border-top-right-radius: 3px; }
