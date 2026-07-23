@@ -1024,7 +1024,7 @@ const c = consultorAtual();
         <div className="config">
           <div className="campo" style={{ flexBasis: '100%' }}>
             <label>Sua assinatura (nome que o cliente vê nas mensagens)</label>
-            <input value={assinatura} onChange={(e) => atualizarAssinatura(e.target.value)} placeholder="Ex: Miguel Pita" />
+            <input value={assinatura} onChange={(e) => atualizarAssinatura(e.target.value)} placeholder="Ex: Miguel Pita:" />
           </div>
           <div className="campo">
             <label>Nome do cliente</label>
