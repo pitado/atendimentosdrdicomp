@@ -192,6 +192,8 @@ export default function Mensagens() {
   const [conversaUsadaIA, setConversaUsadaIA] = useState('');
   const [raciocinioIA, setRaciocinioIA] = useState('');
   const [sugestaoIA, setSugestaoIA] = useState(null);
+  const [mensagemEditavel, setMensagemEditavel] = useState('');
+  const [cadastroStatus, setCadastroStatus] = useState('nao_sei'); // 'nao_sei' | 'sim' | 'nao'
   const [carregandoIA, setCarregandoIA] = useState(false);
   const [erroIA, setErroIA] = useState('');
   const [mostrarManual, setMostrarManual] = useState(false);
@@ -350,6 +352,7 @@ const c = consultorAtual();
     setErroIA('');
     setSugestaoIA(null);
     setRaciocinioIA('');
+    setMensagemEditavel('');
     setConversaUsadaIA(mensagemCliente);
     setCarregandoIA(true);
     try {
@@ -363,10 +366,31 @@ const c = consultorAtual();
         });
       });
 
+      // Contexto do atendimento — o que o painel já sabe, pra IA personalizar.
+      const cons = consultorAtual();
+      const contexto = {
+        nomeCliente: nomeCliente.trim() || null,
+        produto: produto.trim() || null,
+        ramo: (ramoInfo && ramoInfo.ramo) || (cons && cons.ramo) || null,
+        consultor: cons && cons.nome
+          ? { nome: cons.nome, telefone: cons.telefone || null, titulo: cons.genero === 'F' ? 'consultora' : 'consultor' }
+          : null,
+        cnpj: cnpjInfo
+          ? { razao: cnpjInfo.empresa.razao, situacao: cnpjInfo.empresa.situacao, elegivelDirect: cnpjInfo.elegivel }
+          : null,
+        cadastroStatus,
+      };
+
       const r = await fetch('/api/sugerir-mensagem', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mensagemCliente, opcoes: opcoes.map((o) => ({ t: o.t, q: o.q, m: o.m })) }),
+        // Manda os textos-base já com nome/consultor preenchidos (aplicar), pra
+        // IA só precisar deixar naturais — sem lidar com {placeholders}.
+        body: JSON.stringify({
+          mensagemCliente,
+          opcoes: opcoes.map((o) => ({ t: o.t, q: o.q, m: aplicar(o.m) })),
+          contexto,
+        }),
       });
       const j = await r.json();
       if (!j.ok) {
@@ -377,6 +401,8 @@ const c = consultorAtual();
           setAba(escolhida.aba);
           setSugestaoIA(escolhida);
           setRaciocinioIA(j.raciocinio || '');
+          // Usa a mensagem reescrita pela IA; se vier vazia, cai pro texto-base.
+          setMensagemEditavel(j.mensagem || aplicar(FLUXOS[escolhida.aba][escolhida.indice].m));
         }
       }
     } catch {
@@ -429,7 +455,24 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
           </div>
         </div>
 
-        {carregandoIA && <div className="ia-status">Analisando a mensagem do cliente...</div>}
+        {conversaUsadaIA && (
+          <div className="ia-controles">
+            <div className="ia-controles-linha">
+              <span className="ia-controles-label">Cadastro no Db1:</span>
+              <div className="seg">
+                <button type="button" className={cadastroStatus === 'nao_sei' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('nao_sei')}>Não sei</button>
+                <button type="button" className={cadastroStatus === 'sim' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('sim')}>Tem cadastro</button>
+                <button type="button" className={cadastroStatus === 'nao' ? 'seg-btn ativo' : 'seg-btn'} onClick={() => setCadastroStatus('nao')}>Sem cadastro</button>
+              </div>
+              <button type="button" className="btn-azul btn-gerar" onClick={() => sugerirRespostaIA(conversaUsadaIA)} disabled={carregandoIA}>
+                {carregandoIA ? 'Gerando...' : '↻ Gerar de novo'}
+              </button>
+            </div>
+            <div className="ia-controles-dica">Marque o cadastro (ou busque o consultor/CNPJ acima) e clique em “Gerar de novo” pra IA reescrever com esse contexto.</div>
+          </div>
+        )}
+
+        {carregandoIA && <div className="ia-status">Analisando a conversa do cliente...</div>}
         {erroIA && <div className="erro" style={{ marginBottom: 12 }}>A sugestão da IA falhou: {erroIA}</div>}
 
         {sugestaoIA && (
@@ -442,7 +485,13 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
               </div>
             </div>
             <div className="card-body">
-              <pre className="msg">{aplicar(FLUXOS[sugestaoIA.aba][sugestaoIA.indice].m)}</pre>
+              <textarea
+                className="msg-edit"
+                value={mensagemEditavel}
+                onChange={(e) => setMensagemEditavel(e.target.value)}
+                rows={Math.min(16, Math.max(3, mensagemEditavel.split('\n').length + 1))}
+              />
+              <div className="dica-edit">Texto reescrito pela IA — você pode editar antes de enviar.</div>
               <details className="ver-conversa">
                 <summary>Ver conversa que a IA analisou</summary>
                 <pre className="msg-conversa">{conversaUsadaIA || '(vazia)'}</pre>
@@ -452,10 +501,10 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
                 <pre className="msg-conversa">{raciocinioIA || '(sem raciocínio registrado)'}</pre>
               </details>
               <div className="acoes">
-                <button className="btn-borda" onClick={() => copiar('ia-sugestao', aplicar(FLUXOS[sugestaoIA.aba][sugestaoIA.indice].m))}>
+                <button className="btn-borda" onClick={() => copiar('ia-sugestao', mensagemEditavel)}>
                   {statusEnvio['ia-sugestao'] === 'copiado' ? 'Copiado!' : 'Copiar'}
                 </button>
-                <button className="btn-verde" onClick={() => enviar('ia-sugestao', aplicar(FLUXOS[sugestaoIA.aba][sugestaoIA.indice].m))} disabled={statusEnvio['ia-sugestao'] === 'enviando'}>
+                <button className="btn-verde" onClick={() => enviar('ia-sugestao', mensagemEditavel)} disabled={statusEnvio['ia-sugestao'] === 'enviando' || !mensagemEditavel.trim()}>
                   {statusEnvio['ia-sugestao'] === 'enviando' ? 'Enviando...' : statusEnvio['ia-sugestao'] === 'ok' ? 'Enviada!' : statusEnvio['ia-sugestao'] === 'erro' ? 'Erro — tentar de novo' : 'Enviar no WhatsApp'}
                 </button>
               </div>
@@ -680,6 +729,18 @@ className={chat.id === chatSelecionadoId ? 'chat-item selecionado' : 'chat-item'
         .chat-nome { font-weight: 700; font-size: .85rem; color: #22293a; }
         .chat-msg { font-size: .78rem; color: #6b7385; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .ia-status { text-align: center; font-size: .85rem; color: #1c3f94; margin-bottom: 12px; }
+        .ia-controles { background: #fff; border: 1px solid #c6d4f2; border-radius: 12px; padding: 10px 12px; margin-bottom: 12px; }
+        .ia-controles-linha { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        .ia-controles-label { font-size: .78rem; font-weight: 700; color: #1c3f94; }
+        .seg { display: inline-flex; border: 1px solid #c6d4f2; border-radius: 8px; overflow: hidden; }
+        .seg-btn { background: #fff; color: #1c3f94; border: none; border-radius: 0; padding: 7px 12px; font-size: .8rem; font-weight: 600; }
+        .seg-btn + .seg-btn { border-left: 1px solid #c6d4f2; }
+        .seg-btn.ativo { background: #1c3f94; color: #fff; }
+        .btn-gerar { margin-left: auto; }
+        .ia-controles-dica { font-size: .72rem; color: #6b7385; margin-top: 8px; }
+        .msg-edit { width: 100%; white-space: pre-wrap; font-family: inherit; font-size: .9rem; background: #f4f6fb; border: 1px solid #c6d4f2; border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; resize: vertical; line-height: 1.4; }
+        .msg-edit:focus { outline: 2px solid #1c3f94; border-color: #1c3f94; }
+        .dica-edit { font-size: .72rem; color: #6b7385; margin-bottom: 10px; }
         .card.destaque-ia { border: 2px solid #1c3f94; box-shadow: 0 4px 14px rgba(28,63,148,.18); }
         .card.destaque-ia .card-top { background: #eaf0fc; }
         .card.destaque-ia .num { background: #1c3f94; width: auto; padding: 0 8px; border-radius: 14px; font-size: .7rem; }

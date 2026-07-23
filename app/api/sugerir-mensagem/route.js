@@ -1,10 +1,13 @@
 // POST /api/sugerir-mensagem
-// Body: { mensagemCliente: string, opcoes: [{ t: string, q: string }] }
-// Manda a última mensagem do cliente pra Claude junto com a lista de
-// mensagens-padrão (de todas as abas, exceto as internas), e pede pra
-// escolher qual combina melhor. Retorna só o índice dentro da lista
-// enviada — o painel (client-side) já sabe mapear esse índice de volta
-// pra aba+posição e montar a mensagem pronta pra enviar.
+// Body: {
+//   mensagemCliente: string (a conversa inteira, em texto),
+//   opcoes: [{ t, q, m }]  (mensagens-padrão, com nome/consultor já preenchidos),
+//   contexto: { nomeCliente, produto, ramo, consultor, cnpj, cadastroStatus }
+// }
+// Pede pra IA duas coisas: (1) escolher qual mensagem-padrão responde melhor
+// AGORA e (2) reescrever essa mensagem num tom natural e humano de WhatsApp,
+// mantendo a intenção, os links e as regras da empresa.
+// Retorna { ok, indice, mensagem, raciocinio }.
 // Precisa da env OPENAI_API_KEY (via platform.openai.com/api-keys).
 
 export async function POST(req) {
@@ -17,6 +20,7 @@ export async function POST(req) {
 
   const mensagemCliente = (body?.mensagemCliente || '').toString().trim();
   const opcoes = Array.isArray(body?.opcoes) ? body.opcoes : [];
+  const contexto = body?.contexto && typeof body.contexto === 'object' ? body.contexto : {};
 
   if (!mensagemCliente) {
     return Response.json({ ok: false, erro: 'Sem conversa do cliente pra analisar.' }, { status: 400 });
@@ -30,26 +34,66 @@ export async function POST(req) {
     return Response.json({ ok: false, erro: 'OPENAI_API_KEY não configurada.' }, { status: 500 });
   }
 
-  const lista = opcoes.map((o, i) => `${i}. ${o.t} (situação: ${o.q})\nTexto da mensagem: """${o.m}"""`).join('\n\n');
-  const prompt = `Você é um assistente de um time de Sucesso do Cliente (CS) que decide qual mensagem-padrão mandar pra um cliente no WhatsApp.
+  const lista = opcoes
+    .map((o, i) => `${i}. ${o.t} (situação: ${o.q})\nTexto-base: """${o.m}"""`)
+    .join('\n\n');
 
-CONTEXTO IMPORTANTE do processo da empresa:
-- Existem 3 grupos de mensagens: "Triagem rápida" (funciona pra qualquer cliente, é o caminho padrão), "Com cadastro" (só se sabe de certeza que o cliente JÁ TEM cadastro no sistema interno Db1) e "Sem cadastro" (só se sabe de certeza que o cliente NÃO TEM cadastro).
-- A informação de "tem cadastro ou não" vem de um sistema interno (Db1) — ela NÃO aparece na conversa do WhatsApp, a menos que o próprio cliente ou atendente mencione isso explicitamente na conversa.
-- Regra: se não houver nenhuma menção explícita na conversa sobre o cliente já ter ou não cadastro, PREFIRA sempre uma mensagem do grupo "Triagem rápida" em vez de arriscar "Com cadastro" ou "Sem cadastro".
-- Mensagens marcadas como uso "interno" já foram removidas da lista abaixo — todas as opções são pra enviar de fato ao cliente.
+  // Monta o bloco de contexto do atendimento — só entra o que veio preenchido.
+  const linhasContexto = [];
+  if (contexto.nomeCliente) linhasContexto.push(`- Nome do cliente: ${contexto.nomeCliente}`);
+  if (contexto.produto) linhasContexto.push(`- Produto/demanda que o cliente busca: ${contexto.produto}`);
+  if (contexto.ramo) linhasContexto.push(`- Ramo/segmento identificado: ${contexto.ramo}`);
+  if (contexto.consultor?.nome) {
+    const tel = contexto.consultor.telefone ? ` (telefone ${contexto.consultor.telefone})` : '';
+    linhasContexto.push(`- Consultor que vai assumir: ${contexto.consultor.titulo || 'consultor'} ${contexto.consultor.nome}${tel}`);
+  }
+  if (contexto.cnpj?.razao) {
+    const sit = contexto.cnpj.situacao ? ` — situação ${contexto.cnpj.situacao}` : '';
+    const direct = contexto.cnpj.elegivelDirect ? ' — perfil com cara de revenda/integrador (elegível pro Dicomp Direct)' : '';
+    linhasContexto.push(`- Empresa (CNPJ): ${contexto.cnpj.razao}${sit}${direct}`);
+  }
+  const blocoContexto = linhasContexto.length
+    ? linhasContexto.join('\n')
+    : '(nenhuma info extra além da conversa)';
 
-Esta é a conversa até agora entre o cliente e o CS:
+  // Regra de cadastro conforme o que o atendente marcou no painel.
+  let regraCadastro;
+  if (contexto.cadastroStatus === 'sim') {
+    regraCadastro = 'O atendente CONFIRMOU no Db1 que este cliente JÁ TEM cadastro. Priorize mensagens do grupo "Com cadastro".';
+  } else if (contexto.cadastroStatus === 'nao') {
+    regraCadastro = 'O atendente CONFIRMOU que este cliente NÃO TEM cadastro. Priorize mensagens do grupo "Sem cadastro".';
+  } else {
+    regraCadastro = 'O status de cadastro NÃO foi confirmado. Tente inferir pela conversa; se não houver menção explícita sobre ter ou não cadastro, PREFIRA sempre "Triagem rápida".';
+  }
+
+  const prompt = `Você é uma pessoa do time de Sucesso do Cliente (CS) da Dicomp atendendo no WhatsApp. Seu trabalho é escolher a próxima mensagem e escrevê-la de um jeito natural, humano e acolhedor — nunca robótico.
+
+CONTEXTO DO PROCESSO:
+- Existem 3 grupos de mensagens-padrão: "Triagem rápida" (caminho padrão, serve pra qualquer cliente), "Com cadastro" (só quando se sabe que o cliente JÁ TEM cadastro no sistema interno Db1) e "Sem cadastro" (só quando se sabe que NÃO tem).
+- ${regraCadastro}
+- As mensagens de uso interno já foram removidas da lista — todas as opções abaixo são pra enviar de fato ao cliente.
+
+CONTEXTO DESTE ATENDIMENTO:
+${blocoContexto}
+
+CONVERSA ATÉ AGORA (Cliente / Atendente / Bot):
 """${mensagemCliente}"""
 
-Estas são as opções de mensagens-padrão disponíveis:
+OPÇÕES DE MENSAGENS-PADRÃO (o texto-base já vem com nome/consultor preenchidos quando conhecidos):
 
 ${lista}
 
-Pensando passo a passo: primeiro, identifique em que ponto da conversa o cliente está (primeira mensagem? já respondeu algo? já tem alguma info dele?). Segundo, veja se há alguma pista sobre cadastro (Db1) — se não houver, lembre da regra acima. Terceiro, escolha a opção mais adequada pra responder AGORA.
+TAREFA:
+1. Identifique em que ponto da conversa o cliente está e escolha, pelo índice, a melhor mensagem-padrão pra responder AGORA.
+2. Reescreva o texto-base dessa opção como uma mensagem de WhatsApp natural e profissional, do jeito que uma pessoa simpática do CS escreveria. Regras da reescrita:
+   - Mantenha a INTENÇÃO, os LINKS e qualquer informação essencial do texto-base. NÃO invente dados (preço, prazo, cadastro, nomes) que não estejam no contexto.
+   - Personalize com o contexto (nome do cliente, produto, consultor) quando fizer sentido.
+   - Tom cordial e leve, sem soar de robô. Use *asteriscos* pra negrito de destaques. NÃO use emojis.
+   - Se o texto-base tiver algum trecho entre <colchetes angulares> (ex: <nome do consultor>), é um dado ainda não preenchido: mantenha o placeholder exatamente como está pra o atendente completar.
+   - Pode ajustar a saudação e deixar o texto mais solto, contanto que a mensagem continue completa e fiel à intenção.
 
-Depois do seu raciocínio breve, termine sua resposta OBRIGATORIAMENTE com uma linha no formato exato:
-RESPOSTA: <número da opção>`;
+Responda SOMENTE com um JSON válido, sem texto fora dele, neste formato exato:
+{"indice": <número da opção escolhida>, "mensagem": "<a mensagem reescrita, pronta pra enviar>", "raciocinio": "<1-2 frases explicando a escolha>"}`;
 
   try {
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -61,8 +105,9 @@ RESPOSTA: <número da opção>`;
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 400,
-        temperature: 0,
+        max_tokens: 700,
+        temperature: 0.4,
+        response_format: { type: 'json_object' },
       }),
     });
 
@@ -73,18 +118,28 @@ RESPOSTA: <número da opção>`;
 
     const data = await r.json();
     const texto = data?.choices?.[0]?.message?.content || '';
-    // Procura especificamente "RESPOSTA: N" — se não achar (a IA fugiu do
-    // formato), cai pro último número mencionado no texto como reserva.
-    const matchFormatado = texto.match(/RESPOSTA:\s*(\d+)/i);
-    const indice = matchFormatado
-      ? parseInt(matchFormatado[1], 10)
-      : parseInt([...texto.matchAll(/\d+/g)].map((m) => m[0]).pop() ?? '', 10);
+
+    let parsed = null;
+    try {
+      parsed = JSON.parse(texto);
+    } catch {
+      parsed = null;
+    }
+
+    // Índice: do JSON; se falhou o parse, tenta achar no texto solto como reserva.
+    const indice =
+      parsed && Number.isInteger(parsed.indice)
+        ? parsed.indice
+        : parseInt((texto.match(/"?indice"?\s*[:=]\s*(\d+)/i) || [])[1] ?? '', 10);
+    // Mensagem reescrita (pode vir vazia — o painel cai pro texto-base nesse caso).
+    const mensagem = parsed && typeof parsed.mensagem === 'string' ? parsed.mensagem.trim() : '';
+    const raciocinio = parsed && typeof parsed.raciocinio === 'string' ? parsed.raciocinio : texto;
 
     if (Number.isNaN(indice) || indice < 0 || indice >= opcoes.length) {
       return Response.json({ ok: false, erro: 'A IA não retornou um índice válido.', detalhe: texto }, { status: 502 });
     }
 
-    return Response.json({ ok: true, indice, raciocinio: texto });
+    return Response.json({ ok: true, indice, mensagem, raciocinio });
   } catch (err) {
     const detalhe = err instanceof Error ? err.message : String(err);
     return Response.json({ ok: false, erro: 'Erro ao chamar a IA.', detalhe }, { status: 502 });
