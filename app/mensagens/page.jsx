@@ -462,7 +462,7 @@ const c = consultorAtual();
 
   // Cria o ticket pendente quando o handoff é detectado (envio ou ao abrir o
   // chat). Idempotente: se já existe ticket pro chat, não faz nada.
-  async function criarTicketPendente(chat, textoHandoff, mensagens) {
+  async function criarTicketPendente(chat, textoHandoff, mensagens, cnpjInfoArg) {
     const chatId = chat?.id;
     if (!chatId || ticketDoChat(chatId)) return;
     // demanda sugerida: o produto digitado ou a maior mensagem do cliente.
@@ -472,12 +472,16 @@ const c = consultorAtual();
       .map((m) => m.texto)
       .sort((a, b) => b.length - a.length)[0] || '';
     const demanda = produto.trim() || maiorDoCliente;
+    // CNPJ: extrai da própria conversa (robusto); razão social do resultado da
+    // CNPJá (passado ou do estado).
+    const info = cnpjInfoArg !== undefined ? cnpjInfoArg : cnpjInfo;
+    const cnpjDaConversa = extrairCnpj(msgs.map((m) => m.texto).join('\n'));
     const registro = {
       chat_id: chatId,
       cliente: chat.nome || nomeCliente || '',
       telefone: chat.telefone || telCliente || '',
-      cnpj: cnpj || '',
-      razao: cnpjInfo?.empresa?.razao || '',
+      cnpj: cnpjDaConversa ? formatarCnpj(cnpjDaConversa) : (cnpj || ''),
+      razao: info?.empresa?.razao || '',
       demanda,
       consultor: extrairConsultorHandoff(textoHandoff) || (consultorAtual()?.nome || ''),
       status: 'pendente',
@@ -529,12 +533,15 @@ const c = consultorAtual();
         // NÃO chamamos a IA (economiza OpenAI) — só mostramos a conversa.
         const temHandoff = msgs.some((m) => m.quem === 'Atendente' && ehHandoff(m.texto));
         const finalizado = !!ticketDoChat(chat.id) || temHandoff;
-        if (temHandoff) criarTicketPendente(chat, '', msgs); // idempotente
         if (finalizado) {
           setConversaUsadaIA('');
           setRaciocinioIA('');
           setSugestaoIA(null);
           setMensagemEditavel('');
+          // CNPJ é grátis (CNPJá): detecta pra preencher o ticket, mas NÃO chama
+          // a IA (OpenAI). Cria o ticket já com a razão social.
+          const infoCnpj = j.transcricao ? await detectarEVerificarCnpj(j.transcricao) : null;
+          if (temHandoff) criarTicketPendente(chat, '', msgs, infoCnpj);
         } else if (j.transcricao) {
           // Detecta + verifica o CNPJ da conversa antes de pedir a sugestão,
           // e passa o resultado direto pra IA (o estado ainda não atualizou aqui).
