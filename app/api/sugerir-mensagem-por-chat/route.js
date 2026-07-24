@@ -83,6 +83,19 @@ export async function POST(req) {
     return jsonCors({ ok: false, erro: 'Chat sem mensagens pra basear a sugestão.' }, { status: 400 });
   }
 
+  // 1.4. Busca o nome real do contato (a Umbler já sabe quem é) — sem isso a
+  // IA fica sem essa informação e pode "chutar" um nome errado.
+  let nomeContato = '';
+  try {
+    const chatInfo = await getChat(chatId, { includeMessages: 0 });
+    nomeContato = chatInfo?.contact?.name || '';
+  } catch (err) {
+    console.warn('Falha ao buscar nome do contato (não crítico):', err instanceof Error ? err.message : err);
+  }
+  const contextoNome = nomeContato
+    ? `\nNOME REAL DO CLIENTE (confirmado no cadastro da Umbler): ${nomeContato}\n`
+    : '\nNOME DO CLIENTE: não confirmado — só use um nome se o próprio cliente disser o nome dele na conversa. Do contrário, não use nome nenhum na saudação.\n';
+
   // 1.5. Procura um CNPJ na fala do CLIENTE (não do atendente/bot) e, se
   // achar, consulta a situação/elegibilidade — sem travar a sugestão se essa
   // consulta falhar (CNPJá tem limite de 5/min, então erro aqui é esperado
@@ -138,7 +151,7 @@ CONTEXTO DA EMPRESA (Dicomp):
 
 CONVERSA ATÉ AGORA (Cliente / Atendente / Bot):
 """${transcricao}"""
-${contextoCnpj}${blocoTemplates}
+${contextoNome}${contextoCnpj}${blocoTemplates}
 TAREFA:
 1. Identifique em que ponto da conversa o cliente está. IMPORTANTE: olhe a ÚLTIMA mensagem de "Atendente" na conversa (pode ter sido escrita por outra pessoa do time, não só por quem está pedindo a sugestão agora) — se ela já fez uma pergunta e o cliente AINDA NÃO RESPONDEU, a próxima mensagem NÃO deve repetir essa mesma pergunta. Nesse caso, ou espera a resposta (sugestão mais curta, tipo só confirmar o handoff), ou avança pra outra coisa que ainda não foi perguntada.
 2. Escreva a próxima mensagem, natural e profissional, do jeito que uma pessoa simpática do CS escreveria.
