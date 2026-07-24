@@ -140,10 +140,11 @@ CONVERSA ATÉ AGORA (Cliente / Atendente / Bot):
 """${transcricao}"""
 ${contextoCnpj}${blocoTemplates}
 TAREFA:
-1. Identifique em que ponto da conversa o cliente está.
+1. Identifique em que ponto da conversa o cliente está. IMPORTANTE: olhe a ÚLTIMA mensagem de "Atendente" na conversa (pode ter sido escrita por outra pessoa do time, não só por quem está pedindo a sugestão agora) — se ela já fez uma pergunta e o cliente AINDA NÃO RESPONDEU, a próxima mensagem NÃO deve repetir essa mesma pergunta. Nesse caso, ou espera a resposta (sugestão mais curta, tipo só confirmar o handoff), ou avança pra outra coisa que ainda não foi perguntada.
 2. Escreva a próxima mensagem, natural e profissional, do jeito que uma pessoa simpática do CS escreveria.
-   - Se alguma MENSAGEM-MODELO acima encaixar na situação, use ela como base (mesmo texto/tom), só preenchendo os dados entre <colchetes> — não precisa reescrever do zero se já existe um modelo bom pra isso.
+   - Se alguma MENSAGEM-MODELO acima encaixar na situação, use ela como base (mesmo texto/tom), só preenchendo os dados entre <colchetes> — não precisa reescrever do zero se já existe um modelo bom pra isso. Mas NÃO use um template cuja pergunta central já foi feita por outro atendente na mensagem anterior sem resposta do cliente ainda.
    - NÃO invente dados (preço, prazo, cadastro, nomes) que não estejam na conversa.
+   - REGRA CRÍTICA sobre cadastro: você só pode dizer "verifiquei aqui e [tem/não tem] cadastro" se a conversa já tiver um CNPJ informado pelo cliente E o CONTEXTO DO CNPJ acima estiver preenchido (prova de que a verificação de verdade aconteceu). Se o cliente ainda não passou CNPJ/nome/e-mail, a próxima mensagem é PEDIR esses dados (use o template "pedir_dados_cadastro" se disponível) — nunca afirme um resultado de verificação que não aconteceu.
    - Se o CONTEXTO DO CNPJ estiver preenchido acima, use naturalmente esses dados. Se ele disser que o ramo NÃO bateu com nenhum segmento da Dicomp, oriente com cuidado que esse tipo de compra é feito através de uma revenda parceira, sem inventar qual revenda (isso o atendente vai completar). NÃO ofereça a plataforma Direct por conta própria — só toque nesse assunto se o contexto do CNPJ pedir explicitamente ou se o próprio cliente já demonstrou interesse nisso na conversa.
    - Tom cordial e leve, sem soar de robô. Use *asteriscos* pra negrito de destaques. NÃO use emojis.
    - Se precisar de um dado que ainda não está na conversa (ex: nome do consultor), deixe um placeholder entre <colchetes angulares> pro atendente completar.
