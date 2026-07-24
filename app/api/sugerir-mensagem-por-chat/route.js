@@ -221,9 +221,17 @@ Responda SOMENTE com um JSON válido, sem texto fora dele, neste formato exato:
     // telefone+demanda — o resto (código interno, status novo/recuperação)
     // continua manual, então não entra aqui.
     const dataHoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-    const ticketPronto = !!(cnpjDetectado && razaoSocial && nomeContato && telefoneContato && resumoDemanda);
+    const faltando = [];
+    if (!cnpjDetectado) faltando.push('CNPJ');
+    if (!razaoSocial) faltando.push('Razão social (CNPJ ainda não identificado ou consulta falhou)');
+    if (!nomeContato) faltando.push('Nome do cliente');
+    if (!telefoneContato) faltando.push('Telefone');
+    if (!resumoDemanda) faltando.push('Demanda (ainda não ficou clara na conversa)');
+
+    const ticketPronto = faltando.length === 0;
     const ticket = {
       pronto: ticketPronto,
+      faltando,
       tituloParcial: razaoSocial && cnpjDetectado ? `${razaoSocial} - ${cnpjDetectado}` : '',
       descricao: `${dataHoje}\n\nNOME: ${nomeContato || '<nome>'}\n\nCONTATO: ${telefoneContato || '<telefone>'}\n\nDEMANDA: ${resumoDemanda || '<demanda>'}`,
     };
