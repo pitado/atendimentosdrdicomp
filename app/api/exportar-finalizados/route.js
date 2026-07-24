@@ -21,8 +21,9 @@ export async function GET(req) {
   const { searchParams } = new URL(req.url);
   const quantidade = Math.min(
     Math.max(parseInt(searchParams.get('quantidade') || '10', 10) || 10, 1),
-    30
+    100
   );
+  const skip = Math.max(parseInt(searchParams.get('skip') || '0', 10) || 0, 0);
 
   const organizationId = process.env.UMBLER_ORGANIZATION_ID;
   if (!organizationId) {
@@ -33,7 +34,7 @@ export async function GET(req) {
   try {
     const resp = await listChats({
       organizationId,
-      skip: 0,
+      skip,
       take: quantidade,
       chatState: 'Closed',
     });
