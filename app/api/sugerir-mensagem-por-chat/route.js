@@ -96,12 +96,22 @@ export async function POST(req) {
   if (cnpjDetectado) {
     try {
       const info = await consultarCnpj(cnpjDetectado);
+
+      const linhaRamo = info.atendidoPelaDicomp
+        ? `- Ramo identificado pelo CNAE: ${info.segmentos.join(', ')} (é um canal válido — revenda/integrador/provedor etc.)`
+        : `- Ramo pelo CNAE: NÃO bateu com nenhum segmento que a Dicomp atende diretamente. Provavelmente é consumidor final ou empresa fora do canal — a compra deve ser direcionada a uma REVENDA PARCEIRA, não atendida direto pela Dicomp.`;
+
+      const linhaDirect = info.elegivel
+        ? `- Elegível pra plataforma Dicomp Direct: SIM (só como informação de fundo — NÃO ofereça o Direct automaticamente. Só mencione se o cliente já dá sinal de que isso é relevante agora, ex: perguntou sobre revenda, margem, ou forma de comprar pra revender. Fora isso, siga o atendimento normal sem tocar no assunto).`
+        : `- Elegível pra plataforma Dicomp Direct: não (CNAE não bate com os elegíveis).`;
+
       contextoCnpj = `\nCONTEXTO DO CNPJ (detectado na conversa, já verificado — pode usar esses dados com segurança):
 - CNPJ: ${cnpjDetectado}
 - Razão social: ${info.razao || '(não informado)'}
 - Situação cadastral: ${info.situacao || '(não informado)'}
 - Cidade/UF: ${info.municipio || '?'}/${info.uf || '?'}
-- Elegível pra plataforma Dicomp Direct: ${info.elegivel ? 'SIM' : 'não'}
+${linhaRamo}
+${linhaDirect}
 `;
     } catch (err) {
       console.warn('Falha ao consultar CNPJ detectado:', err instanceof Error ? err.message : err);
@@ -123,7 +133,7 @@ TAREFA:
 1. Identifique em que ponto da conversa o cliente está.
 2. Escreva a próxima mensagem, natural e profissional, do jeito que uma pessoa simpática do CS escreveria.
    - NÃO invente dados (preço, prazo, cadastro, nomes) que não estejam na conversa.
-   - Se o CONTEXTO DO CNPJ estiver preenchido acima, você pode usar naturalmente esses dados (ex: confirmar a razão social, mencionar que já é elegível pro Direct e convidar pra conhecer, ou avisar com cuidado se a situação cadastral não for regular) — sem inventar nada além do que está ali.
+   - Se o CONTEXTO DO CNPJ estiver preenchido acima, use naturalmente esses dados. Se ele disser que o ramo NÃO bateu com nenhum segmento da Dicomp, oriente com cuidado que esse tipo de compra é feito através de uma revenda parceira, sem inventar qual revenda (isso o atendente vai completar). NÃO ofereça a plataforma Direct por conta própria — só toque nesse assunto se o contexto do CNPJ pedir explicitamente ou se o próprio cliente já demonstrou interesse nisso na conversa.
    - Tom cordial e leve, sem soar de robô. Use *asteriscos* pra negrito de destaques. NÃO use emojis.
    - Se precisar de um dado que ainda não está na conversa (ex: nome do consultor), deixe um placeholder entre <colchetes angulares> pro atendente completar.
 
