@@ -17,6 +17,7 @@
 
 import { getAllChatMessages, getChat } from '@/lib/umbler';
 import { consultarCnpj, encontrarCnpjNoTexto } from '@/lib/cnpj';
+import { buscarTemplatesRelevantes } from '@/lib/templates';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -118,6 +119,15 @@ ${linhaDirect}
     }
   }
 
+  // 1.6. Busca as mensagens-modelo mais relevantes (sem gastar IA nisso —
+  // é só um filtro por palavra-chave, ver lib/templates.js).
+  const templates = await buscarTemplatesRelevantes(transcricao, 4);
+  const blocoTemplates = templates.length
+    ? `\nMENSAGENS-MODELO (de atendimentos reais seus — reaproveite o texto e o tom quando fizer sentido pra situação atual, adaptando os dados entre <colchetes>):\n${templates
+        .map((t) => `- (${t.situacao}) "${t.texto_base}"`)
+        .join('\n')}\n`
+    : '';
+
   // 2. Pede pra IA redigir a próxima mensagem, no mesmo tom das outras rotas.
   const prompt = `Você é uma pessoa do time de Sucesso do Cliente (CS) da Dicomp atendendo no WhatsApp. Seu trabalho é ler a conversa e escrever a PRÓXIMA mensagem, de um jeito natural, humano e acolhedor — nunca robótico.
 
@@ -128,10 +138,11 @@ CONTEXTO DA EMPRESA (Dicomp):
 
 CONVERSA ATÉ AGORA (Cliente / Atendente / Bot):
 """${transcricao}"""
-${contextoCnpj}
+${contextoCnpj}${blocoTemplates}
 TAREFA:
 1. Identifique em que ponto da conversa o cliente está.
 2. Escreva a próxima mensagem, natural e profissional, do jeito que uma pessoa simpática do CS escreveria.
+   - Se alguma MENSAGEM-MODELO acima encaixar na situação, use ela como base (mesmo texto/tom), só preenchendo os dados entre <colchetes> — não precisa reescrever do zero se já existe um modelo bom pra isso.
    - NÃO invente dados (preço, prazo, cadastro, nomes) que não estejam na conversa.
    - Se o CONTEXTO DO CNPJ estiver preenchido acima, use naturalmente esses dados. Se ele disser que o ramo NÃO bateu com nenhum segmento da Dicomp, oriente com cuidado que esse tipo de compra é feito através de uma revenda parceira, sem inventar qual revenda (isso o atendente vai completar). NÃO ofereça a plataforma Direct por conta própria — só toque nesse assunto se o contexto do CNPJ pedir explicitamente ou se o próprio cliente já demonstrou interesse nisso na conversa.
    - Tom cordial e leve, sem soar de robô. Use *asteriscos* pra negrito de destaques. NÃO use emojis.
