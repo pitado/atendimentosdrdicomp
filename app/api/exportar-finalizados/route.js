@@ -81,10 +81,24 @@ export async function GET(req) {
     }
   }
 
+  // Diagnóstico: se não achou nenhum fechado, devolve a estrutura crua de um
+  // chat qualquer (o primeiro da primeira página) pra a gente ver os nomes
+  // reais dos campos e corrigir o filtro.
+  let diagnostico = null;
+  if (resultado.length === 0) {
+    try {
+      const resp = await listChats({ organizationId, skip: 0, take: 3 });
+      diagnostico = resp.items || [];
+    } catch {
+      diagnostico = 'Falha ao buscar amostra pro diagnóstico.';
+    }
+  }
+
   return Response.json({
     ok: true,
     quantidadePedida: quantidade,
     quantidadeEncontrada: resultado.length,
     chats: resultado,
+    ...(diagnostico ? { diagnostico_amostra_de_chats: diagnostico } : {}),
   });
 }
