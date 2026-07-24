@@ -86,9 +86,11 @@ export async function POST(req) {
   // 1.4. Busca o nome real do contato (a Umbler já sabe quem é) — sem isso a
   // IA fica sem essa informação e pode "chutar" um nome errado.
   let nomeContato = '';
+  let telefoneContato = '';
   try {
     const chatInfo = await getChat(chatId, { includeMessages: 0 });
     nomeContato = chatInfo?.contact?.name || '';
+    telefoneContato = chatInfo?.contact?.phoneNumber || '';
   } catch (err) {
     console.warn('Falha ao buscar nome do contato (não crítico):', err instanceof Error ? err.message : err);
   }
@@ -101,6 +103,7 @@ export async function POST(req) {
   // consulta falhar (CNPJá tem limite de 5/min, então erro aqui é esperado
   // às vezes; nesse caso a IA só segue sem esse contexto extra).
   let contextoCnpj = '';
+  let razaoSocial = '';
   const falaDoCliente = ordenadas
     .filter((m) => m.source === 'Contact' && m.content)
     .map((m) => m.content)
@@ -110,6 +113,7 @@ export async function POST(req) {
   if (cnpjDetectado) {
     try {
       const info = await consultarCnpj(cnpjDetectado);
+      razaoSocial = info.razao || '';
 
       const linhaRamo = info.atendidoPelaDicomp
         ? `- Ramo identificado pelo CNAE: ${info.segmentos.join(', ')} (é um canal válido — revenda/integrador/provedor etc.)`
@@ -169,9 +173,10 @@ TAREFA:
    - Se o CONTEXTO DO CNPJ estiver preenchido acima, use naturalmente esses dados. Se ele disser que o ramo NÃO bateu com nenhum segmento da Dicomp, oriente com cuidado que esse tipo de compra é feito através de uma revenda parceira, sem inventar qual revenda (isso o atendente vai completar). NÃO ofereça a plataforma Direct por conta própria — só toque nesse assunto se o contexto do CNPJ pedir explicitamente ou se o próprio cliente já demonstrou interesse nisso na conversa.
    - Tom cordial e leve, sem soar de robô. Use *asteriscos* pra negrito de destaques. NÃO use emojis.
    - Se precisar de um dado que ainda não está na conversa (ex: nome do consultor), deixe um placeholder entre <colchetes angulares> pro atendente completar.
+3. Além da mensagem, resuma em UMA linha curta qual é a demanda do cliente até agora (ex: "cotação de um CCR2116-12G-4S", "dúvida sobre garantia de produto Ubiquiti"). Se ainda não estiver claro o que o cliente quer, deixe em branco.
 
 Responda SOMENTE com um JSON válido, sem texto fora dele, neste formato exato:
-{"mensagem": "<a mensagem pronta pra enviar>", "raciocinio": "<1-2 frases explicando por que essa é a próxima mensagem certa>"}`;
+{"mensagem": "<a mensagem pronta pra enviar>", "raciocinio": "<1-2 frases explicando por que essa é a próxima mensagem certa>", "resumoDemanda": "<uma linha curta, ou vazio>"}`;
 
   try {
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -206,12 +211,24 @@ Responda SOMENTE com um JSON válido, sem texto fora dele, neste formato exato:
 
     const mensagem = parsed && typeof parsed.mensagem === 'string' ? parsed.mensagem.trim() : '';
     const raciocinio = parsed && typeof parsed.raciocinio === 'string' ? parsed.raciocinio : '';
+    const resumoDemanda = parsed && typeof parsed.resumoDemanda === 'string' ? parsed.resumoDemanda.trim() : '';
 
     if (!mensagem) {
       return jsonCors({ ok: false, erro: 'A IA não retornou uma mensagem válida.', detalhe: texto }, { status: 502 });
     }
 
-    return jsonCors({ ok: true, mensagem, raciocinio });
+    // Monta o ticket: pronto = true só quando tem CNPJ+razão social+nome+
+    // telefone+demanda — o resto (código interno, status novo/recuperação)
+    // continua manual, então não entra aqui.
+    const dataHoje = new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const ticketPronto = !!(cnpjDetectado && razaoSocial && nomeContato && telefoneContato && resumoDemanda);
+    const ticket = {
+      pronto: ticketPronto,
+      tituloParcial: razaoSocial && cnpjDetectado ? `${razaoSocial} - ${cnpjDetectado}` : '',
+      descricao: `${dataHoje}\n\nNOME: ${nomeContato || '<nome>'}\n\nCONTATO: ${telefoneContato || '<telefone>'}\n\nDEMANDA: ${resumoDemanda || '<demanda>'}`,
+    };
+
+    return jsonCors({ ok: true, mensagem, raciocinio, ticket });
   } catch (err) {
     const detalhe = err instanceof Error ? err.message : String(err);
     return jsonCors({ ok: false, erro: 'Erro ao chamar a IA.', detalhe }, { status: 502 });
