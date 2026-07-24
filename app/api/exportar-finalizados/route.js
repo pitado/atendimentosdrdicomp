@@ -1,21 +1,19 @@
-// GET /api/umbler/exportar-finalizados?quantidade=10
+// GET /api/exportar-finalizados?quantidade=10
 //
-// Puxa chats FECHADOS/FINALIZADOS (open === false) com o histórico completo
-// de cada um, pra servir de base de referência (ver como atendimentos reais
-// se desenrolam, sem precisar gastar chamada de IA pra isso).
+// Puxa chats FECHADOS/FINALIZADOS com o histórico completo de cada um, pra
+// servir de base de referência (ver como atendimentos reais se desenrolam,
+// sem precisar gastar chamada de IA pra isso).
 //
-// Não existe um filtro documentado com certeza pra "só chats fechados" direto
-// na API da Umbler, então aqui a gente pagina a listagem geral de chats
-// (GET /v1/chats/) e filtra pelo campo `open` de cada um — mais lento, mas
-// não depende de adivinhar um parâmetro que pode não existir.
+// A API da Umbler, por padrão, só devolve chats ABERTOS (ChatState=Open é o
+// padrão, segundo o comentário em lib/umbler.ts). Pra pegar os fechados,
+// pedimos explicitamente ChatState=Closed na chamada — o nome exato desse
+// valor não está 100% confirmado contra a documentação oficial, então se a
+// resposta ainda vier com chats "open":true, é sinal de que o valor certo é
+// outro (ver o campo `diagnostico_amostra_de_chats` que essa rota devolve
+// nesse caso).
 //
-// Acesse direto no navegador (é uma chamada GET simples, sem CORS, já que
-// você está navegando pra ela, não chamando via fetch de outro domínio):
-//   https://SEU-DOMINIO.vercel.app/api/umbler/exportar-finalizados?quantidade=10
-//
-// Por padrão pega só 10 (pra não estourar o tempo limite da função serverless
-// da Vercel) — se quiser mais, aumenta o `quantidade` aos poucos e vê até
-// onde aguenta sem dar timeout.
+// Acesse direto no navegador (GET simples, sem CORS):
+//   https://SEU-DOMINIO.vercel.app/api/exportar-finalizados?quantidade=10
 
 import { listChats, getAllChatMessages } from '@/lib/umbler';
 
@@ -31,27 +29,18 @@ export async function GET(req) {
     return Response.json({ ok: false, erro: 'UMBLER_ORGANIZATION_ID não configurado.' }, { status: 500 });
   }
 
-  const fechados = [];
-  let skip = 0;
-  const take = 100;
-  const maxPaginas = 15; // teto de segurança: no máximo ~1500 chats escaneados
-
+  let fechados = [];
   try {
-    for (let pagina = 0; pagina < maxPaginas && fechados.length < quantidade; pagina++) {
-      const resp = await listChats({ organizationId, skip, take });
-      const itens = resp.items || [];
-      if (itens.length === 0) break;
-
-      for (const chat of itens) {
-        if (chat.open === false) fechados.push(chat);
-        if (fechados.length >= quantidade) break;
-      }
-      skip += take;
-      if (itens.length < take) break; // acabaram os chats
-    }
+    const resp = await listChats({
+      organizationId,
+      skip: 0,
+      take: quantidade,
+      chatState: 'Closed',
+    });
+    fechados = resp.items || [];
   } catch (err) {
     const detalhe = err instanceof Error ? err.message : String(err);
-    return Response.json({ ok: false, erro: 'Falha ao listar chats na Umbler.', detalhe }, { status: 502 });
+    return Response.json({ ok: false, erro: 'Falha ao listar chats fechados na Umbler.', detalhe }, { status: 502 });
   }
 
   const resultado = [];
@@ -60,6 +49,7 @@ export async function GET(req) {
       const mensagens = await getAllChatMessages(chat.id, { max: 200 });
       resultado.push({
         chatId: chat.id,
+        open: chat.open,
         contato: {
           nome: chat.contact?.name || null,
           telefone: chat.contact?.phoneNumber || null,
@@ -81,17 +71,13 @@ export async function GET(req) {
     }
   }
 
-  // Diagnóstico: se não achou nenhum fechado, devolve a estrutura crua de um
-  // chat qualquer (o primeiro da primeira página) pra a gente ver os nomes
-  // reais dos campos e corrigir o filtro.
+  // Se algum item veio com open:true mesmo tendo pedido Closed, o valor do
+  // parâmetro provavelmente está errado — devolve uma amostra crua pra
+  // ajustar.
+  const algumAindaAberto = resultado.some((r) => r.open === true);
   let diagnostico = null;
-  if (resultado.length === 0) {
-    try {
-      const resp = await listChats({ organizationId, skip: 0, take: 3 });
-      diagnostico = resp.items || [];
-    } catch {
-      diagnostico = 'Falha ao buscar amostra pro diagnóstico.';
-    }
+  if (resultado.length === 0 || algumAindaAberto) {
+    diagnostico = fechados.slice(0, 2);
   }
 
   return Response.json({
