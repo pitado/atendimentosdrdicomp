@@ -16,6 +16,7 @@
 // chamada tenha ido e voltado com sucesso.
 
 import { getAllChatMessages, getChat } from '@/lib/umbler';
+import { consultarCnpj, encontrarCnpjNoTexto } from '@/lib/cnpj';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -30,6 +31,9 @@ function jsonCors(data, init) {
   });
 }
 
+// O navegador manda um OPTIONS "de teste" (preflight) antes do POST de
+// verdade, pra perguntar se a chamada cross-origin é permitida. Sem essa
+// resposta, o POST nem chega a ser enviado.
 export async function OPTIONS() {
   return new Response(null, { status: 204, headers: CORS_HEADERS });
 }
@@ -52,6 +56,7 @@ export async function POST(req) {
     return jsonCors({ ok: false, erro: 'OPENAI_API_KEY não configurada.' }, { status: 500 });
   }
 
+  // 1. Busca o histórico do chat (mesma lógica de /api/umbler/chat-historico).
   let mensagens = [];
   try {
     mensagens = await getAllChatMessages(chatId, { max: 300 });
@@ -77,6 +82,33 @@ export async function POST(req) {
     return jsonCors({ ok: false, erro: 'Chat sem mensagens pra basear a sugestão.' }, { status: 400 });
   }
 
+  // 1.5. Procura um CNPJ na fala do CLIENTE (não do atendente/bot) e, se
+  // achar, consulta a situação/elegibilidade — sem travar a sugestão se essa
+  // consulta falhar (CNPJá tem limite de 5/min, então erro aqui é esperado
+  // às vezes; nesse caso a IA só segue sem esse contexto extra).
+  let contextoCnpj = '';
+  const falaDoCliente = ordenadas
+    .filter((m) => m.source === 'Contact' && m.content)
+    .map((m) => m.content)
+    .join(' ');
+  const cnpjDetectado = encontrarCnpjNoTexto(falaDoCliente);
+
+  if (cnpjDetectado) {
+    try {
+      const info = await consultarCnpj(cnpjDetectado);
+      contextoCnpj = `\nCONTEXTO DO CNPJ (detectado na conversa, já verificado — pode usar esses dados com segurança):
+- CNPJ: ${cnpjDetectado}
+- Razão social: ${info.razao || '(não informado)'}
+- Situação cadastral: ${info.situacao || '(não informado)'}
+- Cidade/UF: ${info.municipio || '?'}/${info.uf || '?'}
+- Elegível pra plataforma Dicomp Direct: ${info.elegivel ? 'SIM' : 'não'}
+`;
+    } catch (err) {
+      console.warn('Falha ao consultar CNPJ detectado:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  // 2. Pede pra IA redigir a próxima mensagem, no mesmo tom das outras rotas.
   const prompt = `Você é uma pessoa do time de Sucesso do Cliente (CS) da Dicomp atendendo no WhatsApp. Seu trabalho é ler a conversa e escrever a PRÓXIMA mensagem, de um jeito natural, humano e acolhedor — nunca robótico.
 
 CONTEXTO DA EMPRESA (Dicomp):
@@ -86,11 +118,12 @@ CONTEXTO DA EMPRESA (Dicomp):
 
 CONVERSA ATÉ AGORA (Cliente / Atendente / Bot):
 """${transcricao}"""
-
+${contextoCnpj}
 TAREFA:
 1. Identifique em que ponto da conversa o cliente está.
 2. Escreva a próxima mensagem, natural e profissional, do jeito que uma pessoa simpática do CS escreveria.
    - NÃO invente dados (preço, prazo, cadastro, nomes) que não estejam na conversa.
+   - Se o CONTEXTO DO CNPJ estiver preenchido acima, você pode usar naturalmente esses dados (ex: confirmar a razão social, mencionar que já é elegível pro Direct e convidar pra conhecer, ou avisar com cuidado se a situação cadastral não for regular) — sem inventar nada além do que está ali.
    - Tom cordial e leve, sem soar de robô. Use *asteriscos* pra negrito de destaques. NÃO use emojis.
    - Se precisar de um dado que ainda não está na conversa (ex: nome do consultor), deixe um placeholder entre <colchetes angulares> pro atendente completar.
 
