@@ -87,16 +87,20 @@ export interface UmblerChat {
 
 // GET /v1/chats — lista de chats, com filtros/paginação (Skip/Take).
 // `organizationId` é obrigatório; por padrão a API já traz só os chats abertos
-// (ChatState=Open).
+// (ChatState=Open). `chatState` permite pedir outro estado (ex: "Closed") —
+// nome do valor não confirmado contra a doc oficial, ajuste se vier diferente
+// do esperado (o retorno mostra os chats de verdade pra conferir).
 export async function listChats(params: {
   organizationId: string;
   skip?: number;
   take?: number;
+  chatState?: string;
 }) {
   const qs = new URLSearchParams({
     organizationId: params.organizationId,
     ...(params.skip != null ? { Skip: String(params.skip) } : {}),
     ...(params.take != null ? { Take: String(params.take) } : {}),
+    ...(params.chatState ? { ChatState: params.chatState } : {}),
   });
   return umblerFetch<{ items: UmblerChat[]; page?: unknown }>(
     `/v1/chats/?${qs.toString()}`
