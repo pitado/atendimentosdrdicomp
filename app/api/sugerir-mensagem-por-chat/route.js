@@ -141,6 +141,14 @@ ${linhaDirect}
         .join('\n')}\n`
     : '';
 
+  // 1.7. Verifica (de forma determinística, sem depender da IA perceber
+  // sozinha) se o Atendente ainda não escreveu nenhuma mensagem nessa
+  // conversa — nesse caso, a próxima mensagem TEM que ser a apresentação.
+  const jaTeveMensagemDeAtendente = ordenadas.some((m) => m.source !== 'Contact' && m.source !== 'Bot' && m.content);
+  const contextoPrimeiraMensagem = !jaTeveMensagemDeAtendente
+    ? `\nATENÇÃO: esta será a PRIMEIRA mensagem do Atendente nessa conversa (só teve Bot/Cliente até agora). A mensagem TEM que ser a apresentação (template "apresentacao_cs"), sozinha ou com uma saudação curta antes — NUNCA pule direto pra outro assunto (cadastro, fora do ramo, produto, Direct etc.) na primeira mensagem, mesmo que você já tenha essa informação disponível. Isso vem numa mensagem seguinte, depois de já ter se apresentado.\n`
+    : '';
+
   // 2. Pede pra IA redigir a próxima mensagem, no mesmo tom das outras rotas.
   const prompt = `Você é uma pessoa do time de Sucesso do Cliente (CS) da Dicomp atendendo no WhatsApp. Seu trabalho é ler a conversa e escrever a PRÓXIMA mensagem, de um jeito natural, humano e acolhedor — nunca robótico.
 
@@ -151,7 +159,7 @@ CONTEXTO DA EMPRESA (Dicomp):
 
 CONVERSA ATÉ AGORA (Cliente / Atendente / Bot):
 """${transcricao}"""
-${contextoNome}${contextoCnpj}${blocoTemplates}
+${contextoNome}${contextoCnpj}${blocoTemplates}${contextoPrimeiraMensagem}
 TAREFA:
 1. Identifique em que ponto da conversa o cliente está. IMPORTANTE: olhe a ÚLTIMA mensagem de "Atendente" na conversa (pode ter sido escrita por outra pessoa do time, não só por quem está pedindo a sugestão agora) — se ela já fez uma pergunta e o cliente AINDA NÃO RESPONDEU, a próxima mensagem NÃO deve repetir essa mesma pergunta. Nesse caso, ou espera a resposta (sugestão mais curta, tipo só confirmar o handoff), ou avança pra outra coisa que ainda não foi perguntada.
 2. Escreva a próxima mensagem, natural e profissional, do jeito que uma pessoa simpática do CS escreveria.
