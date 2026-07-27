@@ -17,7 +17,7 @@
 
 import { getAllChatMessages, getChat } from '@/lib/umbler';
 import { consultarCnpj, encontrarCnpjNoTexto } from '@/lib/cnpj';
-import { buscarTemplatesRelevantes } from '@/lib/templates';
+import { buscarTemplatesRelevantes, buscarTemplatePorSituacao } from '@/lib/templates';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -83,13 +83,50 @@ export async function POST(req) {
     return jsonCors({ ok: false, erro: 'Chat sem mensagens pra basear a sugestão.' }, { status: 400 });
   }
 
-  // 1.4. Busca o nome real do contato (a Umbler já sabe quem é) — sem isso a
+  // 1.4. Verifica (de forma determinística) se o Atendente ainda não
+  // escreveu nenhuma mensagem nessa conversa. Se for o caso, nem precisa
+  // chamar a IA — a resposta já é sempre a mesma (apresentação), então
+  // busca o template direto no banco e devolve na hora, sem gastar créditos.
+  const jaTeveMensagemDeAtendente = ordenadas.some((m) => m.source !== 'Contact' && m.source !== 'Bot' && m.content);
+
+  let nomeContatoRapido = '';
+  if (!jaTeveMensagemDeAtendente) {
+    try {
+      const chatInfoRapido = await getChat(chatId, { includeMessages: 0 });
+      nomeContatoRapido = chatInfoRapido?.contact?.name || '';
+    } catch {
+      // não crítico — segue sem nome
+    }
+
+    const templateApresentacao = await buscarTemplatePorSituacao('apresentacao_cs');
+    if (templateApresentacao?.texto_base) {
+      const mensagemPronta = nomeContatoRapido
+        ? `Olá, ${nomeContatoRapido}! ${templateApresentacao.texto_base}`
+        : templateApresentacao.texto_base;
+
+      return jsonCors({
+        ok: true,
+        mensagem: mensagemPronta,
+        raciocinio: 'Primeira mensagem do atendente nessa conversa — regra fixa de apresentação, sem precisar consultar a IA.',
+        ticket: {
+          pronto: false,
+          faltando: ['CNPJ', 'Demanda (ainda não ficou clara na conversa)'],
+          tituloParcial: '',
+          descricao: `${new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}\n\nNOME: ${nomeContatoRapido || '<nome>'}\n\nCONTATO: <telefone>\n\nDEMANDA: <demanda>`,
+        },
+      });
+    }
+    // Se o template não estiver cadastrado no Supabase por algum motivo,
+    // cai pro fluxo normal (com IA) como rede de segurança.
+  }
+
+  // 1.5. Busca o nome real do contato (a Umbler já sabe quem é) — sem isso a
   // IA fica sem essa informação e pode "chutar" um nome errado.
-  let nomeContato = '';
+  let nomeContato = nomeContatoRapido;
   let telefoneContato = '';
   try {
     const chatInfo = await getChat(chatId, { includeMessages: 0 });
-    nomeContato = chatInfo?.contact?.name || '';
+    nomeContato = nomeContato || chatInfo?.contact?.name || '';
     telefoneContato = chatInfo?.contact?.phoneNumber || '';
   } catch (err) {
     console.warn('Falha ao buscar nome do contato (não crítico):', err instanceof Error ? err.message : err);
@@ -98,7 +135,7 @@ export async function POST(req) {
     ? `\nNOME REAL DO CLIENTE (confirmado no cadastro da Umbler): ${nomeContato}\n`
     : '\nNOME DO CLIENTE: não confirmado — só use um nome se o próprio cliente disser o nome dele na conversa. Do contrário, não use nome nenhum na saudação.\n';
 
-  // 1.5. Procura um CNPJ na fala do CLIENTE (não do atendente/bot) e, se
+  // 1.6. Procura um CNPJ na fala do CLIENTE (não do atendente/bot) e, se
   // achar, consulta a situação/elegibilidade — sem travar a sugestão se essa
   // consulta falhar (CNPJá tem limite de 5/min, então erro aqui é esperado
   // às vezes; nesse caso a IA só segue sem esse contexto extra).
@@ -119,8 +156,12 @@ export async function POST(req) {
         ? `- Ramo identificado pelo CNAE: ${info.segmentos.join(', ')} (é um canal válido — revenda/integrador/provedor etc.)`
         : `- Ramo pelo CNAE: NÃO bateu com nenhum segmento que a Dicomp atende diretamente. Provavelmente é consumidor final ou empresa fora do canal — a compra deve ser direcionada a uma REVENDA PARCEIRA, não atendida direto pela Dicomp.`;
 
+      const jaDemonstrouInteresseDirect = /\b(direct|revend|margem|revender)\b/i.test(falaDoCliente);
+
       const linhaDirect = info.elegivel
-        ? `- Elegível pra plataforma Dicomp Direct: SIM (só como informação de fundo — NÃO ofereça o Direct automaticamente. Só mencione se o cliente já dá sinal de que isso é relevante agora, ex: perguntou sobre revenda, margem, ou forma de comprar pra revender. Fora isso, siga o atendimento normal sem tocar no assunto).`
+        ? jaDemonstrouInteresseDirect
+          ? `- Elegível pra plataforma Dicomp Direct: SIM. O cliente já demonstrou interesse em revenda/margem, então pode explicar a plataforma se fizer sentido. Regras: plataforma gratuita; faturamento mínimo de R$600 por pedido (frete por conta do cliente final abaixo disso); frete grátis acima de R$2000 (exceto racks, cabos, ferragens e painéis solares); margem de lucro livre pra revenda definir; acesso inicial liberado por 90 dias, inativado automaticamente se não usado.`
+          : `- Elegível pra plataforma Dicomp Direct: SIM (só como informação de fundo — NÃO ofereça o Direct por conta própria. Só mencione se o cliente demonstrar interesse).`
         : `- Elegível pra plataforma Dicomp Direct: não (CNAE não bate com os elegíveis).`;
 
       contextoCnpj = `\nCONTEXTO DO CNPJ (detectado na conversa, já verificado — pode usar esses dados com segurança):
@@ -145,15 +186,26 @@ ${linhaDirect}
         .join('\n')}\n`
     : '';
 
-  // 1.7. Verifica (de forma determinística, sem depender da IA perceber
-  // sozinha) se o Atendente ainda não escreveu nenhuma mensagem nessa
-  // conversa — nesse caso, a próxima mensagem TEM que ser a apresentação.
-  const jaTeveMensagemDeAtendente = ordenadas.some((m) => m.source !== 'Contact' && m.source !== 'Bot' && m.content);
+  // 1.7. Contexto de reforço pra IA, usado só no caminho de reserva (quando
+  // o template de apresentação não foi achado no Supabase acima e o fluxo
+  // cai pra IA mesmo sendo a primeira mensagem).
   const contextoPrimeiraMensagem = !jaTeveMensagemDeAtendente
     ? `\nATENÇÃO: esta será a PRIMEIRA mensagem do Atendente nessa conversa (só teve Bot/Cliente até agora). A mensagem TEM que ser a apresentação (template "apresentacao_cs"), sozinha ou com uma saudação curta antes — NUNCA pule direto pra outro assunto (cadastro, fora do ramo, produto, Direct etc.) na primeira mensagem, mesmo que você já tenha essa informação disponível. Isso vem numa mensagem seguinte, depois de já ter se apresentado.\n`
     : '';
 
   // 2. Pede pra IA redigir a próxima mensagem, no mesmo tom das outras rotas.
+  // Manda só as últimas ~40 mensagens no prompt (não a conversa inteira) —
+  // é sobra de contexto pra qualquer situação real, e é o que mais pesa no
+  // custo de token de entrada em conversas longas.
+  const LIMITE_MENSAGENS_PROMPT = 40;
+  const mensagensParaPrompt = ordenadas.filter((m) => m.content).slice(-LIMITE_MENSAGENS_PROMPT);
+  const transcricaoPrompt = mensagensParaPrompt
+    .map((m) => {
+      const quem = m.source === 'Contact' ? 'Cliente' : m.source === 'Bot' ? 'Bot' : 'Atendente';
+      return `${quem}: ${m.content}`;
+    })
+    .join('\n');
+
   const prompt = `Você é uma pessoa do time de Sucesso do Cliente (CS) da Dicomp atendendo no WhatsApp. Seu trabalho é ler a conversa e escrever a PRÓXIMA mensagem, de um jeito natural, humano e acolhedor — nunca robótico.
 
 CONTEXTO DA EMPRESA (Dicomp):
@@ -162,7 +214,7 @@ CONTEXTO DA EMPRESA (Dicomp):
 - Fale como quem entende o negócio do cliente. Não trate o cliente como consumidor final.
 
 CONVERSA ATÉ AGORA (Cliente / Atendente / Bot):
-"""${transcricao}"""
+"""${transcricaoPrompt}"""
 ${contextoNome}${contextoCnpj}${blocoTemplates}${contextoPrimeiraMensagem}
 TAREFA:
 1. Identifique em que ponto da conversa o cliente está. IMPORTANTE: olhe a ÚLTIMA mensagem de "Atendente" na conversa (pode ter sido escrita por outra pessoa do time, não só por quem está pedindo a sugestão agora) — se ela já fez uma pergunta e o cliente AINDA NÃO RESPONDEU, a próxima mensagem NÃO deve repetir essa mesma pergunta. Nesse caso, ou espera a resposta (sugestão mais curta, tipo só confirmar o handoff), ou avança pra outra coisa que ainda não foi perguntada.
