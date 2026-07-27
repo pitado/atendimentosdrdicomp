@@ -120,6 +120,36 @@ export async function POST(req) {
     // cai pro fluxo normal (com IA) como rede de segurança.
   }
 
+  // 1.4.1. Segundo atalho sem IA: se o atendente já se apresentou exatamente
+  // uma vez (só a apresentação, nada mais) e o cliente ainda não mandou
+  // nenhum CNPJ na conversa, a próxima mensagem só pode ser pedir os dados
+  // de cadastro — não precisa de IA nem de consultar CNPJá pra saber isso,
+  // é só verificar se o padrão de CNPJ já apareceu (regex, sem custo).
+  const mensagensDoAtendente = ordenadas.filter((m) => m.source !== 'Contact' && m.source !== 'Bot' && m.content);
+  const falaDoClienteRapida = ordenadas
+    .filter((m) => m.source === 'Contact' && m.content)
+    .map((m) => m.content)
+    .join(' ');
+  const cnpjJaApareceu = !!encontrarCnpjNoTexto(falaDoClienteRapida);
+
+  if (mensagensDoAtendente.length === 1 && !cnpjJaApareceu) {
+    const templatePedirDados = await buscarTemplatePorSituacao('pedir_dados_cadastro');
+    if (templatePedirDados?.texto_base) {
+      return jsonCors({
+        ok: true,
+        mensagem: templatePedirDados.texto_base,
+        raciocinio: 'Atendente já se apresentou e o cliente ainda não passou CNPJ — próximo passo fixo da sequência, sem precisar de IA.',
+        ticket: {
+          pronto: false,
+          faltando: ['CNPJ', 'Demanda (ainda não ficou clara na conversa)'],
+          tituloParcial: '',
+          descricao: `${new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}\n\nNOME: <nome>\n\nCONTATO: <telefone>\n\nDEMANDA: <demanda>`,
+        },
+      });
+    }
+    // Sem o template cadastrado, cai pro fluxo normal como rede de segurança.
+  }
+
   // 1.5. Busca o nome real do contato (a Umbler já sabe quem é) — sem isso a
   // IA fica sem essa informação e pode "chutar" um nome errado.
   let nomeContato = nomeContatoRapido;
@@ -151,6 +181,51 @@ export async function POST(req) {
     try {
       const info = await consultarCnpj(cnpjDetectado);
       razaoSocial = info.razao || '';
+
+      // 1.5.1. Atalhos sem IA: se o CNPJ é válido (situação "Ativa" na
+      // Receita) e o cliente já disse claramente se tem ou não cadastro na
+      // Dicomp, a resposta é sempre a mesma — não precisa perguntar pra IA.
+      // Se a fala do cliente for ambígua (não bateu nem "tem" nem "não
+      // tem"), cai pro fluxo normal com IA, que é mais seguro pra esses casos.
+      const cnpjValido = /ativa/i.test(info.situacao || '');
+      if (cnpjValido) {
+        const negaCadastro = /n[ãa]o\s+(sou|somos)\s+client|n[ãa]o\s+tenho\s+cadastro|ainda\s+n[ãa]o\s+(sou|tenho)/i.test(falaDoCliente);
+        const afirmaCadastro = !negaCadastro && /\b(sou|somos)\s+client|\btenho\s+cadastro|j[áa]\s+sou\s+client/i.test(falaDoCliente);
+
+        if (negaCadastro) {
+          const t = await buscarTemplatePorSituacao('sem_cadastro');
+          if (t?.texto_base) {
+            return jsonCors({
+              ok: true,
+              mensagem: t.texto_base,
+              raciocinio: 'Cliente confirmou que não tem cadastro e o CNPJ é válido — resposta fixa da sequência, sem IA.',
+              ticket: {
+                pronto: false,
+                faltando: ['Demanda (ainda não ficou clara na conversa)'],
+                tituloParcial: razaoSocial && cnpjDetectado ? `${razaoSocial} - ${cnpjDetectado}` : '',
+                descricao: `${new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}\n\nNOME: ${nomeContato || '<nome>'}\n\nCONTATO: ${telefoneContato || '<telefone>'}\n\nDEMANDA: <demanda>`,
+              },
+            });
+          }
+        }
+
+        if (afirmaCadastro) {
+          const t = await buscarTemplatePorSituacao('ja_tem_cadastro');
+          if (t?.texto_base) {
+            return jsonCors({
+              ok: true,
+              mensagem: t.texto_base,
+              raciocinio: 'Cliente confirmou que já tem cadastro e o CNPJ é válido — resposta fixa da sequência, sem IA.',
+              ticket: {
+                pronto: false,
+                faltando: ['Demanda (ainda não ficou clara na conversa)'],
+                tituloParcial: razaoSocial && cnpjDetectado ? `${razaoSocial} - ${cnpjDetectado}` : '',
+                descricao: `${new Date().toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}\n\nNOME: ${nomeContato || '<nome>'}\n\nCONTATO: ${telefoneContato || '<telefone>'}\n\nDEMANDA: <demanda>`,
+              },
+            });
+          }
+        }
+      }
 
       const linhaRamo = info.atendidoPelaDicomp
         ? `- Ramo identificado pelo CNAE: ${info.segmentos.join(', ')} (é um canal válido — revenda/integrador/provedor etc.)`
